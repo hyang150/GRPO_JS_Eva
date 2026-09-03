@@ -28,19 +28,109 @@ def load(path):
     return cfg, steps, evals
 
 
+def multi_seed(by_seed, arms, seeds, reference):
+    """Across-seed aggregate, paired by seed.
+
+    Runs sharing a seed walk the same prompt stream, so the per-seed
+    difference against the reference arm removes the run-to-run term that
+    dominates a single comparison.  With n seeds the 3.0-point noise floor a
+    single arm shows against itself falls as 3.0/sqrt(n) -- which is the whole
+    reason to spend money on more seeds rather than more steps.
+    """
+    import statistics as st
+
+    print(f"across {len(seeds)} seeds: {seeds}\n")
+    print(f"{'arm':<12}{'final acc (mean+-sem)':>24}{'vs ' + reference:>22}{'p (paired t)':>14}")
+
+    ref = {s: by_seed[(reference, s)][2][-1]["accuracy"]
+           for s in seeds if (reference, s) in by_seed}
+
+    for arm in arms:
+        finals = {s: by_seed[(arm, s)][2][-1]["accuracy"]
+                  for s in seeds if (arm, s) in by_seed}
+        if len(finals) < 2:
+            print(f"{arm:<12}{'(needs >= 2 seeds)':>24}")
+            continue
+        vals = list(finals.values())
+        mean = st.fmean(vals)
+        sem = st.stdev(vals) / len(vals) ** 0.5
+        line = f"{arm:<12}{mean:>17.1%} +-{sem:>5.1%}"
+
+        common = [s for s in seeds if s in finals and s in ref]
+        if arm == reference or len(common) < 2:
+            print(line)
+            continue
+        d = [finals[s] - ref[s] for s in common]
+        dm, ds = st.fmean(d), st.stdev(d)
+        if ds == 0:
+            print(line + f"{dm:>+20.1%}{'--':>14}")
+            continue
+        t = dm / (ds / len(d) ** 0.5)
+        p = _t_sf(abs(t), len(d) - 1) * 2
+        print(line + f"{dm:>+16.1%} +-{ds / len(d) ** 0.5:>4.1%}{p:>14.4f}")
+
+    print(f"\nnote: {len(seeds)} seeds put the run-to-run floor near "
+          f"{3.0 / len(seeds) ** 0.5:.1f} points; the effect under test is 0.6-1.0.")
+
+
+def _t_sf(t, df):
+    """Upper tail of Student's t, via the regularised incomplete beta."""
+    from math import lgamma, exp, log
+
+    if t <= 0:                 # x would be 1 and log(1-x) undefined
+        return 0.5
+    x = df / (df + t * t)
+
+    def betacf(a, b, x, it=200):
+        tiny = 1e-30
+        qab, qap, qam = a + b, a + 1.0, a - 1.0
+        c, d = 1.0, 1.0 - qab * x / qap
+        d = 1.0 / (d if abs(d) > tiny else tiny)
+        h = d
+        for m in range(1, it):
+            m2 = 2 * m
+            for num in (m * (b - m) * x / ((qam + m2) * (a + m2)),
+                        -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))):
+                d = 1.0 + num * d
+                d = 1.0 / (d if abs(d) > tiny else tiny)
+                c = 1.0 + num / (c if abs(c) > tiny else tiny)
+                h *= d * c
+            if abs(d * c - 1.0) < 3e-12:
+                break
+        return h
+
+    lbeta = lgamma(df / 2) + lgamma(0.5) - lgamma(df / 2 + 0.5)
+    front = exp(df / 2 * log(x) + 0.5 * log(1 - x) - lbeta)
+    ib = front * betacf(df / 2, 0.5, x) / (df / 2) if x > 0 else 0.0
+    return 0.5 * min(1.0, ib)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--reference", default="vanilla")
     ap.add_argument("--glob", default="train_*_k*n*_s*.jsonl")
     args = ap.parse_args()
 
-    runs = {}
+    by_seed = {}          # {(baseline, seed): (cfg, steps, evals)}
     for p in sorted((ROOT / "results").glob(args.glob)):
         cfg, steps, evals = load(p)
         if steps:
-            runs[cfg.get("baseline", p.stem)] = (cfg, steps, evals)
-    if args.reference not in runs:
-        sys.exit(f"reference arm {args.reference!r} not among {sorted(runs)}")
+            by_seed[(cfg.get("baseline", p.stem), cfg.get("seed", 0))] = (cfg, steps, evals)
+    if not by_seed:
+        sys.exit(f"no runs matched results/{args.glob}")
+
+    seeds = sorted({s for _, s in by_seed})
+    arms = sorted({a for a, _ in by_seed})
+    if args.reference not in arms:
+        sys.exit(f"reference arm {args.reference!r} not among {arms}")
+
+    if len(seeds) > 1:
+        multi_seed(by_seed, arms, seeds, args.reference)
+        print()
+
+    # single-seed view uses the lowest seed, so the per-step detail below is
+    # always one concrete run rather than a blend of several
+    runs = {a: by_seed[(a, seeds[0])] for a in arms if (a, seeds[0]) in by_seed}
 
     import statistics as st
 

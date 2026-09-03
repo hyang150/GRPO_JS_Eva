@@ -46,6 +46,13 @@ def add_grpo_args(p):
                    help="KL coefficient; >0 loads a frozen reference model")
     p.add_argument("--num-iterations", type=int, default=1, help="mu")
     p.add_argument("--epsilon", type=float, default=0.2, help="PPO clip")
+    p.add_argument("--precision", default="bf16", choices=["bf16", "mixed"],
+                   help="bf16 keeps params, grads and AdamW moments in bf16 "
+                        "(fits 16 GB, but at lr=1e-6 only ~2%% of weights move "
+                        "per step); mixed holds fp32 master weights and casts "
+                        "the forward pass -- ~2x the memory")
+    p.add_argument("--track-update-precision", action="store_true",
+                   help="log the fraction of sampled weights each step moves")
     p.add_argument("--scale", default="none", choices=["none", "group", "batch"])
     p.add_argument("--loss-norm", default="constant",
                    choices=["constant", "per_seq", "per_token"])
@@ -65,9 +72,12 @@ def build(args, need_ref: bool = False):
     if tok.pad_token_id is None:
         tok.pad_token = tok.eos_token
 
+    # "mixed" keeps fp32 master weights and casts only the forward pass
+    dtype = torch.float32 if getattr(args, "precision", "bf16") == "mixed" else torch.bfloat16
+
     def load():
         return AutoModelForCausalLM.from_pretrained(
-            args.model, dtype=torch.bfloat16, attn_implementation="sdpa").cuda()
+            args.model, dtype=dtype, attn_implementation="sdpa").cuda()
 
     model = load()
     model.gradient_checkpointing_enable()
@@ -133,6 +143,8 @@ def _train_one(args, tok, model, ref, tag):
     cfg = GRPOConfig(baseline=args.baseline, k_prompts=args.k, n_generations=args.n,
                      lr=args.lr, beta=args.beta, num_iterations=args.num_iterations,
                      epsilon=args.epsilon, scale=args.scale, loss_norm=args.loss_norm,
+                     precision=args.precision,
+                     track_update_precision=args.track_update_precision,
                      max_new_tokens=args.max_new_tokens, temperature=args.temperature,
                      micro_batch=args.micro_batch, gen_micro_batch=args.k * args.n,
                      seed=args.seed)
@@ -168,7 +180,8 @@ def _train_one(args, tok, model, ref, tag):
                 print(f"[{step:4d}] acc={m['accuracy']:.3f} deg={m['degenerate_frac']:.2f} "
                       f"shrink={m['shrink']:.3f} advvar={m['adv_var']:.4f} "
                       f"gnorm={m['grad_norm']:6.3f} kl={m['kl']:.4f} "
-                      f"clip={m['clip_frac']:.3f} {m['sec_total']:.0f}s", flush=True)
+                      + (f"upd={m['update_frac']:.3f} " if "update_frac" in m else "")
+                      + f"clip={m['clip_frac']:.3f} {m['sec_total']:.0f}s", flush=True)
 
         e = evaluate(model, tok, n_problems=args.eval_problems,
                      max_new_tokens=args.max_new_tokens, temperature=0.0)
