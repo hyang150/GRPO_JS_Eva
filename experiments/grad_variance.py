@@ -13,8 +13,18 @@ The quantity reported is the trace of the gradient covariance,
 
     tr Cov(g) = E[||g||^2] - ||E[g]||^2
 
-estimated from fixed Gaussian probes and exact per-batch squared norms.
-Bootstrap intervals resample batches, conditional on the fixed probe set.
+and the noise/signal ratio tr Cov(g) / ||E[g]||^2, from two estimators:
+
+* Hutchinson: tr Cov from the across-batch variance of <g, u_m> over M fixed
+  Gaussian probes; ||E[g]||^2 is then E||g||^2 (exact) minus that.  Bootstrap
+  intervals resample batches, conditional on the probe set.  The weak point:
+  ||E[g]||^2 is under a tenth of E||g||^2 here, so a few percent of probe
+  error on tr Cov is a large error on the ratio, and no number of batches
+  reduces it.  ``trace_cov_probe_se`` reports that error.
+* Disjoint pairs: for independent batches b != b', E<g_b, g_b'> = ||E[g]||^2
+  exactly, no probes.  Batches are paired (0,1), (2,3), ...; each pair yields
+  one unbiased sample of ||E[g]||^2 and one of E||g||^2, and the bootstrap
+  resamples pairs.  Costs one CPU copy of the gradient per arm per pair.
 """
 
 import argparse, json, pathlib, random, sys, time
@@ -61,16 +71,28 @@ def project(grads, m: int) -> float:
 
 
 class GradAccumulator:
-    """Per-batch probe projections and squared norms for one baseline."""
+    """Per-batch probe projections, squared norms and pair inner products
+    for one baseline."""
 
     def __init__(self, params):
         self.z = []          # [n_batches][N_PROBES]
         self.sq_norms = []   # [n_batches]
+        self.dots = []       # <g_{2j}, g_{2j+1}>, one per completed pair
+        self._prev = None    # CPU copy of g_{2j} while waiting for g_{2j+1}
 
     def add(self, grads):
         self.z.append([project(grads, m) for m in range(N_PROBES)])
         self.sq_norms.append(sum(float((g.detach().float() ** 2).sum())
                                  for g in grads))
+        if self._prev is None:
+            # bf16 grads stay bf16 on the CPU copy: nothing is lost
+            self._prev = [g.detach().to("cpu", copy=True) for g in grads]
+        else:
+            self.dots.append(sum(
+                float(torch.dot(g.detach().float().flatten(),
+                                q.to(g.device).float().flatten()))
+                for g, q in zip(grads, self._prev)))
+            self._prev = None
 
     def summary(self, n_boot: int = 2000, seed: int = 0):
         import numpy as np
@@ -91,7 +113,8 @@ class GradAccumulator:
         point = stats(np.arange(n))
         boot = np.array([stats(rng.integers(0, n, n)) for _ in range(n_boot)])
         lo, hi = np.percentile(boot, [2.5, 97.5], axis=0)
-        return {
+        m_probes = z.shape[1]
+        out = {
             # raw per-batch probe projections, so any pairwise comparison can
             # be re-bootstrapped later without re-running the measurement
             "z": z.tolist(), "sq_norms": list(self.sq_norms),
@@ -100,6 +123,43 @@ class GradAccumulator:
             "noise_ratio": point[2], "noise_ratio_ci": [lo[2], hi[2]],
             "E_sq_norm": float(sum(self.sq_norms) / n),
             "n_batches": n, "boot": boot.tolist(),
+            # Each probe column's variance is its own unbiased estimate of
+            # tr Cov, so the spread across the M columns is the standard error
+            # of their mean -- the part of the error the batch bootstrap
+            # cannot see.  Compare it with signal_sq.
+            "trace_cov_probe_se": (float(z.var(axis=0, ddof=1).std(ddof=1) / np.sqrt(m_probes))
+                                   if m_probes > 1 else None),
+        }
+        out.update(self._pair_summary(sq, n_boot, seed))
+        return out
+
+    def _pair_summary(self, sq, n_boot: int, seed: int):
+        """Probe-free estimates from disjoint consecutive batch pairs."""
+        import numpy as np
+        dots = np.asarray(self.dots)
+        n_pairs = len(dots)
+        if n_pairs < 2:
+            return {"dots": dots.tolist(), "n_pairs": n_pairs}
+        sq_pair = 0.5 * (sq[0:2 * n_pairs:2] + sq[1:2 * n_pairs:2])   # E||g||^2 per pair
+        # same seed in every arm -> same resample -> paired across arms
+        rng = np.random.default_rng(seed)
+
+        def stats(idx):
+            sig = dots[idx].mean()          # ||E[g]||^2, unbiased
+            tr = sq_pair[idx].mean() - sig  # tr Cov(g)
+            return tr, sig, (tr / sig if sig > 0 else np.nan)
+
+        point = stats(np.arange(n_pairs))
+        boot = np.array([stats(rng.integers(0, n_pairs, n_pairs)) for _ in range(n_boot)])
+        lo, hi = np.nanpercentile(boot, [2.5, 97.5], axis=0)
+        return {
+            "dots": dots.tolist(), "n_pairs": n_pairs,
+            "pair_trace_cov": point[0], "pair_trace_cov_ci": [lo[0], hi[0]],
+            "pair_signal_sq": point[1], "pair_signal_sq_ci": [lo[1], hi[1]],
+            "pair_noise_ratio": point[2], "pair_noise_ratio_ci": [lo[2], hi[2]],
+            # resamples where the signal estimate came out <= 0
+            "pair_undefined_frac": float(np.mean(~np.isfinite(boot[:, 2]))),
+            "pair_boot": boot.tolist(),
         }
 
 
@@ -186,11 +246,45 @@ def main():
               f"{s['trace_cov']:>10.3e} [{s['trace_cov_ci'][0]:.2e},{s['trace_cov_ci'][1]:.2e}]"
               f"{s['noise_ratio']:>10.1f} [{s['noise_ratio_ci'][0]:6.1f},{s['noise_ratio_ci'][1]:6.1f}]"
               f"{s['rel_noise_vs_vanilla'][0]:>+9.1f}% [{rlo:+6.1f},{rhi:+6.1f}]")
+    print(f"\nprobe SE of tr Cov(g) vs signal_sq (the ratio is only meaningful "
+          f"when the first is well below the second):")
+    for name in ORDER:
+        s = out[name]
+        print(f"  {name:<11} probe_se {s['trace_cov_probe_se']:.3e}   signal_sq {s['signal_sq']:.3e}")
+
+    # ---- pair estimator: exact inner products, no probes -----------------
+    if out["vanilla"].get("pair_boot"):
+        pbase = np.asarray(out["vanilla"]["pair_boot"])
+        n_pairs = out["vanilla"]["n_pairs"]
+        print(f"\npair estimator, {n_pairs} disjoint batch pairs, no probes")
+        print(f"{'baseline':<11}{'tr Cov(g)':>22}{'||E g||^2':>22}{'noise/signal':>24}"
+              f"{'ratio vs GRPO':>22}")
+        for name in ORDER:
+            s = out[name]
+            pb = np.asarray(s.pop("pair_boot"))
+            with np.errstate(invalid="ignore", divide="ignore"):
+                rel = (pb[:, 2] / pbase[:, 2] - 1) * 100
+            ok = np.isfinite(rel)
+            rlo, rhi = (np.percentile(rel[ok], [2.5, 97.5]) if ok.any()
+                        else (float("nan"), float("nan")))
+            pt = (s["pair_noise_ratio"] / out["vanilla"]["pair_noise_ratio"] - 1) * 100
+            s["pair_rel_noise_vs_vanilla"] = [float(pt), float(rlo), float(rhi)]
+            s["pair_rel_undefined_frac"] = float(1 - ok.mean())
+            print(f"{name:<11}"
+                  f"{s['pair_trace_cov']:>10.3e} [{s['pair_trace_cov_ci'][0]:.2e},{s['pair_trace_cov_ci'][1]:.2e}]"
+                  f"{s['pair_signal_sq']:>10.3e} [{s['pair_signal_sq_ci'][0]:.2e},{s['pair_signal_sq_ci'][1]:.2e}]"
+                  f"{s['pair_noise_ratio']:>10.1f} [{s['pair_noise_ratio_ci'][0]:6.1f},{s['pair_noise_ratio_ci'][1]:6.1f}]"
+                  f"{pt:>+9.1f}% [{rlo:+6.1f},{rhi:+6.1f}]")
+    else:
+        for name in ORDER:
+            out[name].pop("pair_boot", None)
 
     p = pathlib.Path(args.out or ROOT / f"results/grad_variance_k{args.k}n{args.n}.json")
     config = {**vars(args), "probe_scheme": PROBE_SCHEME,
               "probe_seed": PROBE_SEED, "n_probes": N_PROBES,
-              "ci_scope": "batches_conditional_on_fixed_probes"}
+              "ci_scope": "batches_conditional_on_fixed_probes",
+              "pair_estimator": "disjoint_consecutive_pairs_v1",
+              "pair_ci_scope": "pairs"}
     p.write_text(json.dumps({"config": config, "summary": out, "batches": rows},
                             indent=2))
     print(f"\nwrote {p}")

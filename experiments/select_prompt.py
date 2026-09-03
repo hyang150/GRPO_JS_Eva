@@ -72,6 +72,10 @@ def main():
                 out = model.generate(**enc, do_sample=args.temperature > 0,
                                      temperature=args.temperature or None,
                                      top_p=1.0, top_k=0,
+                                     # explicit: the checkpoint's generation_config
+                                     # says 1.1, which the README's prompt numbers
+                                     # (2026-09-03) were measured with
+                                     repetition_penalty=1.0,
                                      max_new_tokens=args.max_new_tokens,
                                      pad_token_id=tok.pad_token_id)
             texts += tok.batch_decode(out[:, enc.input_ids.shape[1]:],

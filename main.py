@@ -53,12 +53,19 @@ def add_grpo_args(p):
                         "the forward pass -- ~2x the memory")
     p.add_argument("--track-update-precision", action="store_true",
                    help="log the fraction of sampled weights each step moves")
+    p.add_argument("--track-grad-var", action="store_true",
+                   help="log the per-step gradient variance of arXiv:2511.03710 "
+                        "eq. 17-18 (noise/signal across micro-batches); ~1.5 s/step")
     p.add_argument("--scale", default="none", choices=["none", "group", "batch"])
     p.add_argument("--loss-norm", default="constant",
                    choices=["constant", "per_seq", "per_token"])
     p.add_argument("--max-new-tokens", type=int, default=512)
     p.add_argument("--micro-batch", type=int, default=8)
     p.add_argument("--temperature", type=float, default=1.0)
+    p.add_argument("--repetition-penalty", type=float, default=1.0,
+                   help="rollout sampler penalty; 1.0 = sample the policy itself. "
+                        "Runs before 2026-09-04 inherited 1.1 from the checkpoint's "
+                        "generation_config")
 
 
 def build(args, need_ref: bool = False):
@@ -145,7 +152,9 @@ def _train_one(args, tok, model, ref, tag):
                      epsilon=args.epsilon, scale=args.scale, loss_norm=args.loss_norm,
                      precision=args.precision,
                      track_update_precision=args.track_update_precision,
+                     track_grad_var=args.track_grad_var,
                      max_new_tokens=args.max_new_tokens, temperature=args.temperature,
+                     repetition_penalty=args.repetition_penalty,
                      micro_batch=args.micro_batch, gen_micro_batch=args.k * args.n,
                      seed=args.seed)
     import torch
@@ -181,6 +190,7 @@ def _train_one(args, tok, model, ref, tag):
                       f"shrink={m['shrink']:.3f} advvar={m['adv_var']:.4f} "
                       f"gnorm={m['grad_norm']:6.3f} kl={m['kl']:.4f} "
                       + (f"upd={m['update_frac']:.3f} " if "update_frac" in m else "")
+                      + (f"nsr={m['grad_noise_ratio']:.1f} " if "grad_noise_ratio" in m else "")
                       + f"clip={m['clip_frac']:.3f} {m['sec_total']:.0f}s", flush=True)
 
         e = evaluate(model, tok, n_problems=args.eval_problems,
@@ -210,9 +220,10 @@ def cmd_sweep(args):
 
     import torch
 
-    for b in args.baselines:
+    for seed in (args.seeds or [args.seed]):
+      for b in args.baselines:
         a = copy.copy(args)
-        a.baseline = b
+        a.baseline, a.seed = b, seed
         # Fresh policy per arm from the same seed, so every arm walks the same
         # prompt stream and starts from the same rollouts -- a paired A/B.
         tok, model, ref = build(a, need_ref=a.beta > 0)
@@ -257,6 +268,9 @@ def main():
     add_model_args(p); add_grpo_args(p)
     p.add_argument("--baselines", nargs="+",
                    default=["vanilla", "js_fixed", "js_pooled", "global"])
+    p.add_argument("--seeds", type=int, nargs="+", default=None,
+                   help="run every arm once per seed, seed-major (overrides --seed); "
+                        "`compare` then pairs arms within a seed")
     p.add_argument("--steps", type=int, default=150)
     p.add_argument("--eval-every", type=int, default=50)
     p.add_argument("--eval-problems", type=int, default=200)

@@ -26,6 +26,7 @@ BASELINES = ["vanilla", "rloo", "global", "js_fixed", "js_pooled", "js_loo"]
 def run(k, n, trials, alpha, beta, seed, device="cpu"):
     """Returns {baseline: {metric: value}} for one (K, N) setting."""
     g = torch.Generator(device=device).manual_seed(seed)
+    torch.manual_seed(seed)     # Beta.sample draws from the global RNG, not ``g``
     dist = torch.distributions.Beta(alpha, beta)
 
     # (trials, K) true pass rates; (trials, K, N) binary rewards
@@ -41,7 +42,7 @@ def run(k, n, trials, alpha, beta, seed, device="cpu"):
 
         err = est - p
         se = (err ** 2).mean(dim=1)                     # per-trial MSE
-        shrink = torch.stack([shrink_factor(r[t], name).mean() for t in range(trials)])
+        shrink = torch.stack([shrink_factor(r[t], name).nanmean() for t in range(trials)])
 
         out[name] = {
             "mse": se.mean().item(),

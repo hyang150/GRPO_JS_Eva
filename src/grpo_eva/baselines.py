@@ -122,12 +122,31 @@ def js_fixed(rewards: torch.Tensor) -> torch.Tensor:
 # --------------------------------------------------------------------------
 # 5. James-Stein, V estimated from the within-group variance
 # --------------------------------------------------------------------------
+def pooled_std(rewards: torch.Tensor) -> torch.Tensor:
+    """sqrt(mean_k s_k^2), s_k^2 the unbiased within-group variance.
+
+    The one rescaling of a 0/1 reward matrix that establishes GRPO.md's
+    sigma^2 ~= 1 precondition without dividing a degenerate group by zero.
+    """
+    return rewards.var(dim=1, unbiased=True).mean().sqrt()
+
+
 @register_baseline("js_pooled")
 def js_pooled(rewards: torch.Tensor) -> torch.Tensor:
-    """Same shrinkage, but V is estimated instead of assumed.
+    """GRPO.md with its own precondition honoured.
 
-    V_hat = mean_k(s_k^2) / N with s_k^2 the unbiased within-group variance.
-    For 0/1 rewards this tracks p(1-p)/N instead of the 4x-too-large 1/N.
+    Section 2 of the spec assumes the rewards were rescaled so the per-sample
+    variance is ~1 -- that is where V = 1/N comes from -- but its pseudocode
+    takes the raw matrix.  Dividing by ``pooled_std`` establishes the
+    precondition, and running the spec's ten steps on r/sigma then scaling
+    back is algebraically this function: the shrink factor 1 - (K-3)/(N S')
+    with S' = S/sigma^2 equals 1 - V_hat (K-3)/S with V_hat = sigma^2/N.
+    ``tests/test_spec_conformance.py`` pins the identity to 1e-12.
+
+    So this is not a different method: it is the spec applied as the spec
+    says.  A per-group std is not usable for the rescaling -- 30-40% of
+    GSM8K groups at N=8 have s_k = 0.  For 0/1 rewards V_hat tracks
+    p(1-p)/N instead of the 4x-too-large 1/N.
     """
     k, n = rewards.shape
     x = rewards.mean(dim=1)
@@ -165,10 +184,11 @@ def js_loo(rewards: torch.Tensor, lambda_correction: bool = True) -> torch.Tenso
     shrinkage target excludes prompt i.  That is what keeps the baseline
     independent of the reward it is subtracted from.
 
-    NOTE: these formulas were transcribed from the paper's arXiv HTML by
-    automated extraction.  The (n-1)/n factor in particular should be
-    checked against the PDF before any published claim -- hence the
-    ``lambda_correction`` switch.
+    Checked against the arXiv PDF (v1, Sec. 3.3): eq. 10 defines the two
+    leave-one-out means, eq. 13-14 the plug-in v_{-i} and s_{-i}, eq. 15 the
+    coefficient *with* the (n-1)/n factor, eq. 16 the baseline.  The
+    ``lambda_correction`` switch is kept so the factor's effect can be
+    ablated; ``True`` is the paper.
     """
     k, n = rewards.shape
     if k < 2 or n < 2:
@@ -264,13 +284,19 @@ def shrink_factor(rewards: torch.Tensor, baseline: str) -> torch.Tensor:
     1.0 means "no shrinkage" (= vanilla GRPO), 0.0 means "fully collapsed
     onto the global mean".  Watching this distribution is how we catch
     over-shrinkage during training.
+
+    A group whose mean coincides with the grand mean says nothing about the
+    shrinkage (0/0) and comes back as NaN; reduce with ``nanmean``.  Earlier
+    versions returned 1.0 there, which is why the seed-0 sweep logs a mean
+    "shrink" of 0.025 for ``global`` -- by definition it is 0 -- and slightly
+    inflates every other arm on steps where such a group occurs.
     """
     x = rewards.mean(dim=1)
     x_bar = x.mean()
     b = get_baseline_fn(baseline)(rewards).mean(dim=1)
     diff = x - x_bar
     ok = diff.abs() > 1e-6
-    out = torch.ones_like(diff)
+    out = torch.full_like(diff, float("nan"))
     out[ok] = (b[ok] - x_bar) / diff[ok]
     return out
 

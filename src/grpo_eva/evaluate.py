@@ -39,6 +39,9 @@ def evaluate(model, tokenizer, n_problems: int = 200, batch_size: int = 32,
             temperature=temperature if temperature > 0 else None,
             top_p=1.0, top_k=0 if temperature > 0 else None,
             max_new_tokens=max_new_tokens,
+            # Qwen2.5's generation_config carries repetition_penalty=1.1;
+            # left implicit it would score a penalised decoder, not the policy.
+            repetition_penalty=1.0,
             pad_token_id=tokenizer.pad_token_id, use_cache=True)
         texts += tokenizer.batch_decode(out[:, enc.input_ids.shape[1]:],
                                         skip_special_tokens=True)

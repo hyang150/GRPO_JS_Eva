@@ -133,3 +133,68 @@ def test_group_std_scaling_does_not_explode_on_degenerate_groups():
     assert torch.isfinite(guarded).all()
     # non-degenerate groups are still normalised the usual way
     assert not torch.allclose(guarded[1:], compute_advantages(r, baseline="js_fixed")[1:])
+
+
+def test_js_pooled_is_the_spec_with_its_precondition_honoured():
+    """GRPO.md assumes rewards were rescaled so the per-sample variance is
+    ~1 (that is where V = 1/N comes from).  Dividing 0/1 rewards by the
+    pooled within-group std and then running the spec's ten steps is
+    algebraically js_pooled: the shrink factor 1 - (K-3)/(N S') with
+    S' = S/sigma^2 equals 1 - V_hat (K-3)/S with V_hat = sigma^2/N."""
+    from grpo_eva.baselines import js_pooled, pooled_std
+
+    for seed in range(5):
+        torch.manual_seed(seed)
+        r = (torch.rand(16, 8) < 0.35).double()
+        sigma = pooled_std(r)
+        assert sigma > 0                                   # else the spec divides by 0
+        mu_spec_rescaled = sigma * spec_mu_shrunk(r / sigma)
+        assert torch.allclose(js_pooled(r).mean(dim=1), mu_spec_rescaled, atol=1e-12)
+
+
+# ------------------------------------------------ the pseudocode, verbatim
+def spec_pseudocode_advantages(rewards: torch.Tensor) -> torch.Tensor:
+    """GRPO.md 3.3 transcribed character for character (not used anywhere else)."""
+    K, N = rewards.shape
+    X = rewards.mean(dim=1)
+    if K < 4:
+        X_bar = X.mean()
+        return rewards - X_bar.unsqueeze(1)
+    X_bar = X.mean()
+    diff = X - X_bar
+    S = (diff ** 2).sum()
+    c = (K - 3) / N
+    eps = 1e-8
+    shrink_factor = 1.0 - c / max(S, eps)
+    shrink_factor = torch.clamp(shrink_factor, min=0.0)
+    mu_shrunk = X_bar + shrink_factor * diff
+    return rewards - mu_shrunk.unsqueeze(1)
+
+
+def test_pseudocode_agrees_with_js_fixed_off_the_edge_cases():
+    torch.manual_seed(4)
+    r = (torch.rand(8, 8) < 0.35).double()
+    assert torch.allclose(spec_pseudocode_advantages(r),
+                          compute_advantages(r, baseline="js_fixed"), atol=1e-12)
+
+
+def test_pseudocode_crashes_on_S_equal_zero_which_step7_claims_to_handle():
+    """Python's max(S, eps) hands back the float eps when S < eps, so
+    torch.clamp receives a float and raises.  Step 7 ("S = 0 -> factor 1")
+    is never reached.  Ours returns the group means, finite."""
+    r = torch.tensor([[0.0, 1.0]] * 8, dtype=torch.float64)      # every group mean 0.5
+    with pytest.raises(TypeError):
+        spec_pseudocode_advantages(r)
+    assert torch.isfinite(compute_advantages(r, baseline="js_fixed")).all()
+
+
+def test_pseudocode_crashes_below_K_equal_4_and_would_center_globally():
+    r = torch.rand(3, 8, dtype=torch.float64)
+    with pytest.raises(IndexError):
+        spec_pseudocode_advantages(r)
+    # what the branch *meant* (fixing only the unsqueeze) is global centering,
+    # i.e. the `global` arm -- not GRPO; step 5's prose returns the group means
+    meant = r - r.mean(dim=1).mean()
+    assert torch.allclose(meant, compute_advantages(r, baseline="global"))
+    assert torch.allclose(compute_advantages(r, baseline="js_fixed"),
+                          compute_advantages(r, baseline="vanilla"))

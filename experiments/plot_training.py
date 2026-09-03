@@ -32,7 +32,12 @@ def smooth(xs, w, kind="mean"):
     import statistics
     f = statistics.median if kind == "median" else statistics.fmean
     h, n = w // 2, len(xs)
-    return [f(xs[max(0, i - h):min(n, i + h + 1)]) for i in range(n)]
+
+    def window(i):
+        vals = [v for v in xs[max(0, i - h):min(n, i + h + 1)] if v == v]  # drop NaN
+        return f(vals) if vals else float("nan")
+
+    return [window(i) for i in range(n)]
 
 
 def load(path):
@@ -49,15 +54,27 @@ def main():
     ap.add_argument("--glob", default="train_*_k*n*_s*.jsonl")
     ap.add_argument("--window", type=int, default=10)
     ap.add_argument("--out", default="results/fig3_training.png")
+    ap.add_argument("--seed", type=int, default=None,
+                    help="which seed's arms to draw (default: the lowest present)")
     args = ap.parse_args()
 
-    runs = {}
+    # one figure = one seed.  Keyed by baseline alone, a second seed's file
+    # would silently replace the first's for that arm and the panel would mix
+    # prompt streams.
+    by_seed = {}
     for p in sorted((ROOT / "results").glob(args.glob)):
         cfg, steps, evals = load(p)
         if steps:
-            runs[cfg.get("baseline", p.stem)] = (steps, evals)
-    if not runs:
+            by_seed.setdefault(cfg.get("seed", 0), {})[cfg.get("baseline", p.stem)] = (cfg, steps, evals)
+    if not by_seed:
         sys.exit(f"no runs matched results/{args.glob}")
+    seed = min(by_seed) if args.seed is None else args.seed
+    if seed not in by_seed:
+        sys.exit(f"no runs for seed {seed}; have {sorted(by_seed)}")
+    runs = {arm: (steps, evals) for arm, (_, steps, evals) in by_seed[seed].items()}
+    cfg0 = next(iter(by_seed[seed].values()))[0]
+    if len(by_seed) > 1:
+        print(f"seeds present: {sorted(by_seed)}; drawing seed {seed}")
     print("arms:", ", ".join(runs))
 
     panels = [
@@ -118,9 +135,8 @@ def main():
                frameon=False, fontsize=9, bbox_to_anchor=(0.5, 0.01),
                labelcolor=INK2)
 
-    cfg0 = load(sorted((ROOT / "results").glob(args.glob))[0])[0]
     fig.suptitle(f"GRPO on GSM8K — Qwen2.5-0.5B-Instruct, K={cfg0.get('k', 8)} x "
-                 f"N={cfg0.get('n', 8)}, lr={cfg0.get('lr', 1e-6):g}, "
+                 f"N={cfg0.get('n', 8)}, lr={cfg0.get('lr', 1e-6):g}, seed {seed}, "
                  f"faint = per step, bold = rolling window of {args.window}",
                  color=INK, fontsize=12.5, fontweight="bold", x=0.055, ha="left", y=0.955)
 
