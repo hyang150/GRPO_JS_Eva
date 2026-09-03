@@ -14,3 +14,8 @@ results/train_*.jsonl
 
 # ~1 GB per arm
 checkpoints/
+
+# Chrome traces from experiments/profile_runtime.py: 100-150 MB each, over
+# GitHub's file limit, and regenerable. The summary.json and operators.txt
+# beside them are the readable output and are kept.
+results/runtime_profile_*/*.trace.json

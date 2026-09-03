@@ -1,0 +1,65 @@
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg    # of Calls  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                               experiment/update_replay         0.00%       0.000us         0.00%       0.000us       0.000us        3.267s        81.91%        3.267s        3.267s             1  
+                                               aten::mm         1.48%      97.749ms         2.51%     165.061ms      32.854us        2.144s        53.77%        2.144s     426.832us          5024  
+void cutlass::Kernel2<cutlass_80_tensorop_bf16_s1681...         0.00%       0.000us         0.00%       0.000us       0.000us        1.202s        30.13%        1.202s     444.463us          2704  
+                         grpo/old_or_reference_logprobs         0.00%       0.000us         0.00%       0.000us       0.000us     945.145ms        23.70%     945.145ms     945.145ms             1  
+                                 grpo/forward_with_grad         0.00%       0.000us         0.00%       0.000us       0.000us     899.369ms        22.55%     899.369ms     112.421ms             8  
+void cutlass::Kernel2<cutlass_80_tensorop_bf16_s1681...         0.00%       0.000us         0.00%       0.000us       0.000us     455.834ms        11.43%     455.834ms     780.538us           584  
+void cutlass::Kernel2<cutlass_80_tensorop_bf16_s1681...         0.00%       0.000us         0.00%       0.000us       0.000us     350.939ms         8.80%     350.939ms     365.561us           960  
+                                            aten::copy_         0.49%      32.214ms         6.62%     436.467ms      64.300us     321.711ms         8.07%     321.711ms      47.394us          6788  
+                                              aten::mul         1.46%      95.879ms         8.11%     534.480ms      55.663us     309.856ms         7.77%     309.856ms      32.270us          9602  
+                                     aten::_log_softmax         0.00%     192.843us         0.01%     333.387us      20.837us     229.293ms         5.75%     229.293ms      14.331ms            16  
+void at::native::(anonymous namespace)::cunn_SoftMax...         0.00%       0.000us         0.00%       0.000us       0.000us     229.293ms         5.75%     229.293ms      14.331ms            16  
+                    aten::_efficient_attention_backward         0.05%       3.305ms         0.43%      28.437ms     148.110us     215.149ms         5.39%     217.208ms       1.131ms           192  
+fmha_cutlassB_bf16_aligned_64x64_k64_sm80(PyTorchMem...         0.00%       0.000us         0.00%       0.000us       0.000us     215.149ms         5.39%     215.149ms       1.121ms           192  
+                     aten::_efficient_attention_forward         0.08%       5.003ms         0.29%      18.950ms      32.899us     202.436ms         5.08%     202.436ms     351.452us           576  
+fmha_cutlassF_bf16_aligned_64x64_rf_sm80(PyTorchMemE...         0.00%       0.000us         0.00%       0.000us       0.000us     202.436ms         5.08%     202.436ms     351.452us           576  
+void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us     194.159ms         4.87%     194.159ms     143.609us          1352  
+void cutlass::Kernel2<cutlass_80_tensorop_bf16_s1681...         0.00%       0.000us         0.00%       0.000us       0.000us     131.638ms         3.30%     131.638ms      16.455ms             8  
+void at::native::unrolled_elementwise_kernel<at::nat...         0.00%       0.000us         0.00%       0.000us       0.000us     129.705ms         3.25%     129.705ms      80.213us          1617  
+void at::native::elementwise_kernel<128, 4, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us     127.216ms         3.19%     127.216ms      41.090us          3096  
+                       aten::_log_softmax_backward_data         0.00%      55.788us         0.00%     113.549us      14.194us     114.756ms         2.88%     114.756ms      14.344ms             8  
+void at::native::(anonymous namespace)::cunn_SoftMax...         0.00%       0.000us         0.00%       0.000us       0.000us     114.756ms         2.88%     114.756ms      14.344ms             8  
+                                            aten::addmm         0.62%      41.037ms         1.11%      72.926ms      42.203us      80.307ms         2.01%      80.307ms      46.474us          1728  
+void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us      64.592ms         1.62%      64.592ms      14.246us          4534  
+                                             aten::silu         0.11%       7.554ms         0.20%      12.931ms      22.450us      62.563ms         1.57%      62.644ms     108.757us           576  
+void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us      62.563ms         1.57%      62.563ms     108.617us           576  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 6.589s
+Self CUDA time total: 3.988s
+
+
+CPU self time:
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg    # of Calls  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                       cudaLaunchKernel        23.02%        1.517s        23.02%        1.517s      39.382us       0.000us         0.00%       0.000us       0.000us         38513  
+                                    Command Buffer Full        21.09%        1.390s        21.09%        1.390s     803.754us       0.000us         0.00%       0.000us       0.000us          1729  
+                                  cudaStreamSynchronize        19.41%        1.279s        19.41%        1.279s      20.296ms       0.000us         0.00%       0.000us       0.000us            63  
+                                          grpo/backward        15.43%        1.017s        36.57%        2.409s     301.177ms       0.000us         0.00%       5.740us       0.718us             8  
+                                            MmBackward0         1.97%     130.080ms         8.41%     553.928ms     713.824us       0.000us         0.00%        1.382s       1.781ms           776  
+                                        cudaMemcpyAsync         1.92%     126.258ms         1.92%     126.258ms     272.696us       0.000us         0.00%       0.000us       0.000us           463  
+                                               aten::mm         1.48%      97.749ms         2.51%     165.061ms      32.854us        2.144s        53.77%        2.144s     426.832us          5024  
+                                              aten::mul         1.46%      95.879ms         8.11%     534.480ms      55.663us     309.856ms         7.77%     309.856ms      32.270us          9602  
+                                         cuLaunchKernel         1.39%      91.259ms         1.39%      91.259ms      13.911us       0.000us         0.00%       0.000us       0.000us          6560  
+                                 grpo/forward_with_grad         1.22%      80.656ms         6.00%     395.614ms      49.452ms       0.000us         0.00%     855.170ms     106.896ms             8  
+                         grpo/old_or_reference_logprobs         1.06%      69.970ms        13.12%     864.216ms     864.216ms       0.000us         0.00%     905.133ms     905.133ms             1  
+                                            aten::addmm         0.62%      41.037ms         1.11%      72.926ms      42.203us      80.307ms         2.01%      80.307ms      46.474us          1728  
+                                            aten::copy_         0.49%      32.214ms         6.62%     436.467ms      64.300us     321.711ms         8.07%     321.711ms      47.394us          6788  
+                                              aten::add         0.44%      29.222ms         1.01%      66.579ms      17.893us      42.460ms         1.06%      42.460ms      11.411us          3721  
+                                              aten::pow         0.43%      28.403ms         3.81%     251.198ms     128.687us      16.412ms         0.41%      28.130ms      14.411us          1952  
+                                              aten::sum         0.34%      22.125ms         1.72%     113.034ms      62.623us      18.512ms         0.46%      18.565ms      10.285us          1805  
+                                            aten::empty         0.32%      21.039ms         0.32%      21.039ms       2.507us       0.000us         0.00%       0.000us       0.000us          8393  
+                                           MulBackward0         0.31%      20.459ms         4.78%     314.787ms     178.047us       0.000us         0.00%     123.239ms      69.706us          1768  
+                                             aten::add_         0.29%      19.040ms         3.01%     198.028ms      48.727us      59.889ms         1.50%      59.889ms      14.736us          4064  
+                                        cudaMemsetAsync         0.27%      18.079ms         0.27%      18.079ms       6.608us       0.000us         0.00%       0.000us       0.000us          2736  
+          aten::_scaled_dot_product_efficient_attention         0.27%      17.522ms         0.59%      39.118ms      67.912us       0.000us         0.00%     202.436ms     351.452us           576  
+                                             aten::view         0.25%      16.507ms         0.25%      16.507ms       1.368us       0.000us         0.00%       0.000us       0.000us         12069  
+      autograd::engine::evaluate_function: MulBackward0         0.22%      14.647ms         7.71%     507.839ms     287.239us       0.000us         0.00%     134.847ms      76.271us          1768  
+                                             aten::mean         0.22%      14.470ms         0.36%      23.746ms      20.123us       8.587ms         0.22%       8.587ms       7.277us          1180  
+                                                aten::t         0.22%      14.433ms         0.40%      26.047ms       2.754us       0.000us         0.00%       0.000us       0.000us          9459  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 6.589s
+Self CUDA time total: 3.988s
