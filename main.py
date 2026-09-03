@@ -271,6 +271,11 @@ def main():
     p.add_argument("--n-problems", type=int, default=60)
     p.set_defaults(fn=cmd_prompt)
 
+    p = sub.add_parser("report", help="compile report/report.tex to PDF")
+    p.set_defaults(fn=lambda a: subprocess.call(
+        ["latexmk", "-pdf", "-interaction=nonstopmode", "-halt-on-error", "report.tex"],
+        cwd=ROOT / "report"))
+
     p = sub.add_parser("compare", help="paired McNemar across sweep arms")
     p.add_argument("--reference", default="vanilla")
     p.set_defaults(fn=lambda a: subprocess.call(
