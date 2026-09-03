@@ -1,12 +1,44 @@
-# GRPO_EVA — shrinkage baselines for GRPO on GSM8K
+# Shrinkage baselines for GRPO on GSM8K
 
-Replacing GRPO's per-group mean baseline with a James–Stein / empirical-Bayes
-shrinkage estimator, and measuring whether it actually helps.
+GRPO estimates each prompt's baseline from the N sampled completions of that
+prompt alone. With N small that mean is noisy. This replaces it with a
+James–Stein / empirical-Bayes estimator that pulls each group mean toward the
+batch mean, and measures whether that helps — on
+Qwen2.5-0.5B-Instruct, GSM8K, one RTX 5080.
 
-Method spec: [`GRPO.md`](GRPO.md).
+Method spec: [`GRPO.md`](GRPO.md) (given).
 Prior work: [arXiv:2511.03710](https://arxiv.org/abs/2511.03710) (shrinkage
-baselines for RLVR), [arXiv:2602.05165](https://arxiv.org/abs/2602.05165) (EBPO).
-Neither has released code.
+baselines for RLVR) and [arXiv:2602.05165](https://arxiv.org/abs/2602.05165)
+(EBPO). Neither has released code, so everything here is a from-scratch
+implementation.
+
+### Three results
+
+1. **The spec as written does not work.** Its `V = 1/N` assumes per-sample
+   reward variance ≈ 1, but 0/1 correctness rewards have `p(1−p) ≤ 0.25`. The
+   shrinkage factor collapses to 0.004: the estimator becomes the global mean,
+   the group structure is gone, and for N ≥ 4 it is *worse* than plain GRPO.
+   Four independent measurements agree.
+2. **Estimating `V` from the data reproduces the method's claim.** The
+   two-level leave-one-out variant reaches **−21.4% gradient noise
+   [−51.5, −7.8]**, inside the 11.2–67.1% band the paper reports.
+3. **The spec's optional "divide by the within-group std" is unsafe here.**
+   Degenerate groups have std 0 *and*, under shrinkage, a non-zero advantage by
+   design — so the usual `std + 1e-4` multiplies it by 1e4.
+
+### Where to look
+
+| | |
+|---|---|
+| the estimators | [`src/grpo_eva/baselines.py`](src/grpo_eva/baselines.py) |
+| does it match the given spec? | [`tests/test_spec_conformance.py`](tests/test_spec_conformance.py) |
+| the GRPO loop | [`src/grpo_eva/grpo.py`](src/grpo_eva/grpo.py) |
+| what was measured, and what was not | [Phase 3](#phase-3--paired-gradient-variance) |
+
+```bash
+uv sync && python main.py smoke        # torch cu129; the RTX 5080 is sm_120
+python -m pytest tests/ -q             # 115 tests
+```
 
 ## CLI
 
