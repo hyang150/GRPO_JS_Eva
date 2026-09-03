@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from datasets import load_dataset
+from pathlib import Path
+
+from datasets import Dataset, load_dataset
 
 from .rewards import extract_gold
 
@@ -17,9 +19,28 @@ SYSTEM = (
 )
 
 
+def _cached_arrow(split: str) -> Path | None:
+    cache_root = Path.home() / ".cache/huggingface/datasets/openai___gsm8k/main/0.0.0"
+    paths = sorted(cache_root.glob(f"*/gsm8k-{split}.arrow"),
+                   key=lambda p: p.stat().st_mtime, reverse=True)
+    return paths[0] if paths else None
+
+
+def _load_dataset_cache_first(split: str):
+    """Load GSM8K without touching the network when the Arrow cache is present."""
+    cached = _cached_arrow(split)
+    if cached is not None:
+        print(f"GSM8K {split}: using local Arrow cache {cached}", flush=True)
+        return Dataset.from_file(str(cached))
+
+    print(f"GSM8K {split}: local Arrow cache missing; falling back to Hugging Face Hub.",
+          flush=True)
+    return load_dataset("openai/gsm8k", "main", split=split)
+
+
 def load_gsm8k(tokenizer, split: str = "train", limit: int | None = None):
     """Returns a list of {"prompt": str, "gold": float, "question": str}."""
-    ds = load_dataset("openai/gsm8k", "main", split=split)
+    ds = _load_dataset_cache_first(split)
     if limit is not None:
         ds = ds.select(range(min(limit, len(ds))))
 

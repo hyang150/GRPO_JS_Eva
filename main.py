@@ -31,6 +31,29 @@ DEFAULT_MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
 
 
 # --------------------------------------------------------------------- shared
+def _step_progress(args, tag: str):
+    if not getattr(args, "progress", True):
+        return range(args.steps)
+    try:
+        from tqdm.auto import trange
+    except Exception:
+        print("tqdm is not installed; falling back to plain training logs.", flush=True)
+        return range(args.steps)
+    return trange(args.steps, desc=tag, unit="step", dynamic_ncols=True)
+
+
+def _progress_write(progress, text: str):
+    writer = getattr(progress, "write", None)
+    if writer is not None:
+        writer(text)
+    else:
+        print(text, flush=True)
+
+
+def _stage(message: str, progress=None):
+    _progress_write(progress, f"[{time.strftime('%H:%M:%S')}] {message}")
+
+
 def add_model_args(p):
     p.add_argument("--model", default=DEFAULT_MODEL)
     p.add_argument("--seed", type=int, default=0)
@@ -68,20 +91,27 @@ def build(args, need_ref: bool = False):
 
     torch.manual_seed(args.seed)
     random.seed(args.seed)
+    _stage(f"seed={args.seed}: loading tokenizer {args.model}")
     tok = AutoTokenizer.from_pretrained(args.model)
     if tok.pad_token_id is None:
         tok.pad_token = tok.eos_token
 
     # "mixed" keeps fp32 master weights and casts only the forward pass
-    dtype = torch.float32 if getattr(args, "precision", "bf16") == "mixed" else torch.bfloat16
+    precision = getattr(args, "precision", "bf16")
+    dtype = torch.float32 if precision == "mixed" else torch.bfloat16
+    dtype_label = "fp32 params + bf16 autocast" if precision == "mixed" else "bf16 params"
 
-    def load():
-        return AutoModelForCausalLM.from_pretrained(
+    def load(role: str):
+        _stage(f"seed={args.seed}: loading {role} model on cuda ({dtype_label})")
+        loaded = AutoModelForCausalLM.from_pretrained(
             args.model, dtype=dtype, attn_implementation="sdpa").cuda()
+        _stage(f"seed={args.seed}: {role} model ready")
+        return loaded
 
-    model = load()
+    model = load("policy")
     model.gradient_checkpointing_enable()
-    ref = load() if need_ref else None
+    _stage(f"seed={args.seed}: policy gradient checkpointing enabled")
+    ref = load("reference") if need_ref else None
     return tok, model, ref
 
 
@@ -149,13 +179,18 @@ def _train_one(args, tok, model, ref, tag):
                      micro_batch=args.micro_batch, gen_micro_batch=args.k * args.n,
                      seed=args.seed)
     import torch
+    _stage(f"{tag}: reset CUDA peak memory stats")
     torch.cuda.reset_peak_memory_stats()      # else arm 2 reports arm 1's peak
+    _stage(f"{tag}: initializing GRPO trainer")
     trainer = GRPO(model, tok, cfg, ref_model=ref)
+    _stage(f"{tag}: loading GSM8K train split")
     data = load_gsm8k(tok, "train")
+    _stage(f"{tag}: loaded {len(data)} train prompts")
     rng = random.Random(args.seed)
 
     out = ROOT / f"results/train_{tag}.jsonl"
     out.parent.mkdir(exist_ok=True)
+    _stage(f"{tag}: writing log to {out}")
     t0 = time.time()
     print(f"\n=== {tag} === baseline={args.baseline} K={args.k} N={args.n} "
           f"beta={args.beta} mu={args.num_iterations} scale={args.scale}", flush=True)
@@ -164,36 +199,55 @@ def _train_one(args, tok, model, ref, tag):
         conf = {k: v for k, v in vars(args).items()
                 if isinstance(v, (str, int, float, bool, list, type(None)))}
         f.write(json.dumps({"record": "config", **conf, "tag": tag}) + "\n")
-        for step in range(args.steps):
+        progress = _step_progress(args, tag)
+        for step in progress:
             if args.eval_every and step % args.eval_every == 0:
+                _stage(f"{tag}: starting eval@{step} on {args.eval_problems} test problems", progress)
                 e = evaluate(model, tok, n_problems=args.eval_problems,
-                             max_new_tokens=args.max_new_tokens, temperature=0.0)
+                             max_new_tokens=args.max_new_tokens, temperature=0.0,
+                             progress=getattr(args, "progress", True))
                 f.write(json.dumps({"record": "eval", "step": step, **e}) + "\n")
-                print(f"       eval@{step}: {e['accuracy']:.1%} +/- {e['stderr']:.1%}",
-                      flush=True)
+                _progress_write(
+                    progress,
+                    f"       eval@{step}: {e['accuracy']:.1%} +/- {e['stderr']:.1%}",
+                )
 
             m = trainer.step(rng.sample(data, args.k))
             m.update(record="step", step=step)
             f.write(json.dumps(m) + "\n")
             f.flush()
+            if hasattr(progress, "set_postfix"):
+                progress.set_postfix(
+                    acc=f"{m['accuracy']:.3f}",
+                    deg=f"{m['degenerate_frac']:.2f}",
+                    shrink=f"{m['shrink']:.3f}",
+                    gnorm=f"{m['grad_norm']:.2f}",
+                    sec=f"{m['sec_total']:.0f}",
+                )
             if step % args.log_every == 0:
-                print(f"[{step:4d}] acc={m['accuracy']:.3f} deg={m['degenerate_frac']:.2f} "
-                      f"shrink={m['shrink']:.3f} advvar={m['adv_var']:.4f} "
-                      f"gnorm={m['grad_norm']:6.3f} kl={m['kl']:.4f} "
-                      + (f"upd={m['update_frac']:.3f} " if "update_frac" in m else "")
-                      + f"clip={m['clip_frac']:.3f} {m['sec_total']:.0f}s", flush=True)
+                _progress_write(
+                    progress,
+                    f"[{step:4d}] acc={m['accuracy']:.3f} deg={m['degenerate_frac']:.2f} "
+                    f"shrink={m['shrink']:.3f} advvar={m['adv_var']:.4f} "
+                    f"gnorm={m['grad_norm']:6.3f} kl={m['kl']:.4f} "
+                    + (f"upd={m['update_frac']:.3f} " if "update_frac" in m else "")
+                    + f"clip={m['clip_frac']:.3f} {m['sec_total']:.0f}s",
+                )
 
+        _stage(f"{tag}: starting final eval on {args.eval_problems} test problems", progress)
         e = evaluate(model, tok, n_problems=args.eval_problems,
-                     max_new_tokens=args.max_new_tokens, temperature=0.0)
+                     max_new_tokens=args.max_new_tokens, temperature=0.0,
+                     progress=getattr(args, "progress", True))
         f.write(json.dumps({"record": "eval", "step": args.steps, **e}) + "\n")
-        print(f"       eval@final: {e['accuracy']:.1%} +/- {e['stderr']:.1%}")
+        _progress_write(progress, f"       eval@final: {e['accuracy']:.1%} +/- {e['stderr']:.1%}")
 
     if args.save_checkpoint:
         d = ROOT / "checkpoints" / tag
+        _stage(f"{tag}: saving checkpoint to {d}")
         model.save_pretrained(d); tok.save_pretrained(d)
         print(f"       checkpoint -> {d}")
 
-    print(f"{tag} done in {(time.time() - t0) / 60:.1f} min -> {out}")
+    _stage(f"{tag}: done in {(time.time() - t0) / 60:.1f} min -> {out}")
     return out
 
 
@@ -210,14 +264,18 @@ def cmd_sweep(args):
 
     import torch
 
-    for b in args.baselines:
+    _stage(f"sweep start: seed={args.seed}, arms={', '.join(args.baselines)}")
+    for arm_idx, b in enumerate(args.baselines, start=1):
         a = copy.copy(args)
         a.baseline = b
+        tag = f"{b}_k{a.k}n{a.n}_s{a.seed}"
+        _stage(f"sweep arm {arm_idx}/{len(args.baselines)}: {tag} - building fresh policy")
         # Fresh policy per arm from the same seed, so every arm walks the same
         # prompt stream and starts from the same rollouts -- a paired A/B.
         tok, model, ref = build(a, need_ref=a.beta > 0)
         try:
-            _train_one(a, tok, model, ref, f"{b}_k{a.k}n{a.n}_s{a.seed}")
+            _train_one(a, tok, model, ref, tag)
+            _stage(f"sweep arm {arm_idx}/{len(args.baselines)}: {tag} complete")
         finally:
             del model, ref, tok
             gc.collect()
@@ -251,6 +309,8 @@ def main():
     p.add_argument("--tag", default=None)
     p.add_argument("--save-checkpoint", action="store_true",
                    help="write the final policy so it can be re-evaluated later")
+    p.add_argument("--no-progress", action="store_false", dest="progress",
+                   help="disable the tqdm training progress bar")
     p.set_defaults(fn=cmd_train)
 
     p = sub.add_parser("sweep", help="one training run per baseline, paired by seed")
@@ -263,6 +323,8 @@ def main():
     p.add_argument("--log-every", type=int, default=5)
     p.add_argument("--save-checkpoint", action="store_true",
                    help="write the final policy so it can be re-evaluated later")
+    p.add_argument("--no-progress", action="store_false", dest="progress",
+                   help="disable the tqdm training progress bar")
     p.set_defaults(fn=cmd_sweep, tag=None)
 
     p = sub.add_parser("gradvar", help="phase 3: paired gradient-noise measurement")

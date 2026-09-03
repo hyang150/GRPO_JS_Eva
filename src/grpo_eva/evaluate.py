@@ -30,7 +30,18 @@ def evaluate(model, tokenizer, n_problems: int = 200, batch_size: int = 32,
     data = load_gsm8k(tokenizer, split, limit=n_problems)
     texts, golds = [], [d["gold"] for d in data]
 
-    for i in range(0, len(data), batch_size):
+    batches = range(0, len(data), batch_size)
+    plain_progress = False
+    if progress:
+        try:
+            from tqdm.auto import tqdm
+        except Exception:
+            plain_progress = True
+        else:
+            batches = tqdm(batches, desc=f"eval {split}", unit="batch",
+                           dynamic_ncols=True, leave=False)
+
+    for i in batches:
         chunk = data[i:i + batch_size]
         enc = tokenizer([d["prompt"] for d in chunk], return_tensors="pt",
                         padding=True, padding_side="left").to(model.device)
@@ -42,7 +53,7 @@ def evaluate(model, tokenizer, n_problems: int = 200, batch_size: int = 32,
             pad_token_id=tokenizer.pad_token_id, use_cache=True)
         texts += tokenizer.batch_decode(out[:, enc.input_ids.shape[1]:],
                                         skip_special_tokens=True)
-        if progress:
+        if plain_progress:
             print(f"  eval {min(i + batch_size, len(data))}/{len(data)}", flush=True)
 
     if ckpt:
