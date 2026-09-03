@@ -1,0 +1,53 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyperFirstAtBeginDocument{\AtBeginDocument}
+\HyperFirstAtBeginDocument{\ifx\hyper@anchor\@undefined
+\global\let\oldcontentsline\contentsline
+\gdef\contentsline#1#2#3#4{\oldcontentsline{#1}{#2}{#3}}
+\global\let\oldnewlabel\newlabel
+\gdef\newlabel#1#2{\newlabelxx{#1}#2}
+\gdef\newlabelxx#1#2#3#4#5#6{\oldnewlabel{#1}{{#2}{#3}}}
+\AtEndDocument{\ifx\hyper@anchor\@undefined
+\let\contentsline\oldcontentsline
+\let\newlabel\oldnewlabel
+\fi}
+\fi}
+\global\let\hyper@last\relax 
+\gdef\HyperFirstAtBeginDocument#1{#1}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\citation{zeng2025shrinking}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Task}{1}{section.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Setup.}{1}{section*.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {2}Method}{1}{section.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.1}What the specification says}{1}{subsection.2.1}\protected@file@percent }
+\newlabel{eq:js}{{1}{1}{What the specification says}{equation.2.1}{}}
+\citation{zeng2025shrinking}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.2}The assumption that fails}{2}{subsection.2.2}\protected@file@percent }
+\newlabel{eq:limit}{{2}{2}{The assumption that fails}{equation.2.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.3}Baselines compared}{2}{subsection.2.3}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces The \texttt  {global} arm is the one that makes the comparison interpretable: without it, ``James--Stein helps'' cannot be told apart from ``any baseline other than the group mean helps''.\relax }}{2}{table.caption.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3}Result 1: the specification collapses onto the global mean}{2}{section.3}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces MSE of the baseline against the true $p_k$, relative to \texttt  {vanilla}; $N=8$, 3000 trials. By $K=32$ \texttt  {js\_fixed} and \texttt  {global} agree to three significant figures --- they are the same estimator. \texttt  {js\_pooled} moves the other way, improving as $K$ grows.\relax }}{2}{table.caption.3}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Sweeping $N$ at $K=32$. \texttt  {js\_fixed} (dashed) lies exactly on \texttt  {global} for $N\le 8$. Estimating $V$ recovers the intended behaviour, and its advantage grows as $N$ shrinks --- the regime the method targets.\relax }}{3}{figure.caption.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4}Result 2: estimating $V$ reproduces the published claim}{3}{section.4}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces 200 paired batches, $K=8\times N=8$, mean accuracy 29.1\%. Intervals are a paired bootstrap over batches.\relax }}{3}{table.caption.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{\texttt  {js\_fixed} and \texttt  {global} look best here, and that reading is wrong.}{3}{section*.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5}Result 3: the standard-deviation variant is a footgun}{3}{section.5}\protected@file@percent }
+\citation{zeng2025shrinking}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Effect sizes with bootstrap intervals. Shaded: the band reported by Zeng et al. Hollow markers are biased estimators, not comparable at face value.\relax }}{4}{figure.caption.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {6}Why not end-to-end accuracy}{4}{section.6}\protected@file@percent }
+\newlabel{sec:floor}{{6}{4}{Why not end-to-end accuracy}{section.6}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Same arm, same seed, same configuration. \texttt  {eval@0} matches exactly because greedy decoding is deterministic, so the divergence is entirely in training: \texttt  {torch.manual\_seed} does not make sampled generation reproducible on GPU.\relax }}{4}{table.caption.8}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7}Training runs}{4}{section.7}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces \leavevmode {\color  {red}[\,fill from \texttt  {python main.py compare} once the sweep finishes\,]}. Accuracy differences here are smaller than the $3.0$-point noise floor and are reported for completeness, not as evidence.\relax }}{4}{table.caption.9}\protected@file@percent }
+\bibcite{shao2024deepseekmath}{1}
+\bibcite{zeng2025shrinking}{2}
+\bibcite{han2026ebpo}{3}
+\bibcite{james1961}{4}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces \leavevmode {\color  {red}[\,regenerate once all five arms are present\,]}. Faint lines are per-step values; bold is a rolling window --- median for the gradient norm, which is spiky enough that a rolling mean manufactures flat plateaus that read as stalled training.\relax }}{5}{figure.caption.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {8}Limitations}{5}{section.8}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {9}Reproduction}{5}{section.9}\protected@file@percent }
+\bibcite{efron1977}{5}
+\bibcite{liu2025drgrpo}{6}
+\gdef \@abspage@last{6}

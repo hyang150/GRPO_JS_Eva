@@ -13,7 +13,8 @@ The quantity reported is the trace of the gradient covariance,
 
     tr Cov(g) = E[||g||^2] - ||E[g]||^2
 
-accumulated over batches with a running mean of g held on the CPU.
+estimated from fixed Gaussian probes and exact per-batch squared norms.
+Bootstrap intervals resample batches, conditional on the fixed probe set.
 """
 
 import argparse, json, pathlib, random, sys, time
@@ -35,21 +36,25 @@ ORDER = ["vanilla", "rloo", "global", "js_fixed", "js_pooled", "js_loo"]
 
 N_PROBES = 24   # Hutchinson rel. error ~ sqrt(2/M); 8 probes is ~50%
 PROBE_SEED = 20260903
+PROBE_SCHEME = "gaussian_stream_v2"
 
 
 def project(grads, m: int) -> float:
     """<g, u_m> for a fixed standard-normal probe u_m.
 
-    Storing 8 probes over 0.5B parameters would cost 16 GB, so each probe is
-    regenerated from its seed on the fly.  With u ~ N(0, I),
+    Each probe is regenerated from its seed on the fly. All gradients must
+    use the same device and parameter ordering across batches and arms.
+    With u ~ N(0, I),
     E_u[Var_b(<g_b, u>)] = tr Cov(g) and E_u[(E_b<g_b,u>)^2] = ||E[g]||^2,
     so averaging over probes estimates both -- and because each batch now
     yields a *scalar*, the whole thing bootstraps.
     """
+    if not grads:
+        return 0.0
+    gen = torch.Generator(device=grads[0].device).manual_seed(PROBE_SEED + m * 7919)
     acc = 0.0
     for g in grads:
-        gen = torch.Generator(device=g.device).manual_seed(
-            PROBE_SEED + m * 7919 + g.numel())
+        # Advance one stream so equal-shaped parameters get distinct entries.
         u = torch.randn(g.shape, generator=gen, device=g.device, dtype=torch.float32)
         acc += float((g.detach().float() * u).sum())
     return acc
@@ -183,7 +188,10 @@ def main():
               f"{s['rel_noise_vs_vanilla'][0]:>+9.1f}% [{rlo:+6.1f},{rhi:+6.1f}]")
 
     p = pathlib.Path(args.out or ROOT / f"results/grad_variance_k{args.k}n{args.n}.json")
-    p.write_text(json.dumps({"config": vars(args), "summary": out, "batches": rows},
+    config = {**vars(args), "probe_scheme": PROBE_SCHEME,
+              "probe_seed": PROBE_SEED, "n_probes": N_PROBES,
+              "ci_scope": "batches_conditional_on_fixed_probes"}
+    p.write_text(json.dumps({"config": config, "summary": out, "batches": rows},
                             indent=2))
     print(f"\nwrote {p}")
 

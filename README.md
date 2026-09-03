@@ -14,14 +14,23 @@ implementation.
 
 ### Three results
 
+**Phase 3 correction (2026-09-03):** The historical gradient-noise numbers
+and Figure 2 below are not validated and must be remeasured. The original
+projection code reused random entries across equal-shaped parameter tensors,
+invalidating its covariance estimate. The corrected code uses a continuous
+random stream per probe and records `probe_scheme="gaussian_stream_v2"`.
+This affects the standalone `gradvar` measurement, not `train`/`sweep`, their
+accuracy evaluations, or their checkpoints.
+
 1. **The spec as written does not work.** Its `V = 1/N` assumes per-sample
    reward variance ≈ 1, but 0/1 correctness rewards have `p(1−p) ≤ 0.25`. The
    shrinkage factor collapses to 0.004: the estimator becomes the global mean,
    the group structure is gone, and for N ≥ 4 it is *worse* than plain GRPO.
-   Four independent measurements agree.
-2. **Estimating `V` from the data reproduces the method's claim.** The
-   two-level leave-one-out variant reaches **−21.4% gradient noise
-   [−51.5, −7.8]**, inside the 11.2–67.1% band the paper reports.
+   Synthetic measurements support this finding; gradient confirmation awaits
+   remeasurement.
+2. **Estimating `V` improves synthetic baseline MSE.** The previously reported
+   **−21.4% gradient noise [−51.5, −7.8]** is an unvalidated historical result,
+   not evidence of a gradient-noise reduction until Phase 3 is rerun.
 3. **The spec's optional "divide by the within-group std" is unsafe here.**
    Degenerate groups have std 0 *and*, under shrinkage, a non-zero advantage by
    design — so the usual `std + 1e-4` multiplies it by 1e4.
@@ -61,7 +70,7 @@ cancels by construction.
 
 ```bash
 uv sync && python main.py smoke        # torch cu129; the RTX 5080 is sm_120
-python -m pytest tests/ -q             # 115 tests
+python -m pytest tests/ -q             # 121 tests
 ```
 
 ## CLI
@@ -162,9 +171,20 @@ reports — which is why Phase 3 measures the gradient directly.
 
 ## Phase 3 — paired gradient variance
 
+**Remeasurement required.** Existing result files do not contain the original
+gradients, so the projection error cannot be repaired by recomputing p-values
+or bootstrapping the stored summaries. After the training sweep finishes, run
+the corrected measurement into a new file to preserve the historical record:
+
 ```bash
-python main.py gradvar --batches 200
+python experiments/grad_variance.py --batches 200 --k 8 --n 8 --seed 0 --out results/grad_variance_k8n8_v2.json
 ```
+
+The command has not yet been rerun. The table and Figure 2 below remain
+historical; `python main.py figures` still reads the old `_long.json` file.
+The current bootstrap conditions on a fixed set of 24 probes and does not
+include uncertainty from probe selection. Validate probe accuracy before
+using a new confidence interval as a publication claim.
 
 Every baseline scores the **same rollouts**, so rollout randomness cancels and
 the baseline is the only thing that differs. The policy is frozen: this
@@ -174,7 +194,7 @@ them by scale. `tr Cov` comes from Hutchinson probes; `||E[g]||^2` from the
 exact per-batch norms minus it. Intervals are a paired bootstrap over batches
 (same resample for every arm, so the shared rollout noise cancels).
 
-**Result, 200 batches, Qwen2.5-0.5B-Instruct, K=8 x N=8, mean accuracy 29.1%:**
+**Historical result, unvalidated: 200 batches, Qwen2.5-0.5B-Instruct, K=8 x N=8, mean accuracy 29.1%:**
 
 | baseline | noise/signal | vs GRPO | 95% CI | |
 |---|---|---|---|---|
@@ -185,8 +205,8 @@ exact per-batch norms minus it. Intervals are a paired bootstrap over batches
 | `js_fixed` | 6.0 | −48.1% | [−81.3, −15.8] | biased — see below |
 | `global` | 5.8 | −49.7% | [−83.5, −15.6] | biased — see below |
 
-`js_loo` reproduces the paper's claim: −21.4% sits inside the 11.2–67.1%
-band it reports, and the interval excludes zero.
+The old interval excluded zero, but that does not correct the projection
+error or establish agreement with the paper's result.
 
 **`js_fixed` and `global` look best on this metric and that reading is wrong.**
 Only leave-one-out baselines are independent of the reward they are subtracted
@@ -195,11 +215,12 @@ two target a *different* `E[g]`: giving an all-correct group a positive
 advantage inflates `||E[g]||^2` with a component that merely pushes up easy
 prompts. A larger denominator is not more signal.
 
-`rloo ≈ vanilla` to within [−2.5, +6.9] is the check that the instrument works:
-leave-one-out changes the baseline's *independence*, not its accuracy, which is
-also what the synthetic study found.
+Agreement between `rloo` and `vanilla` did not validate the measurement:
+their proportional gradients can agree even under an incorrect projection.
+CPU regression tests now compare projected covariance with exact covariance
+and check that opposite gradients in separate parameters do not cancel.
 
-`js_fixed ≈ global` for the fourth time (6.0 vs 5.8), now on real gradients.
+The historical `js_fixed` versus `global` comparison also needs remeasurement.
 
 ![Figure 2](results/fig2_grad_variance.png)
 
@@ -248,15 +269,15 @@ the same expression multiplies it by 1e4. Measured on GSM8K at K=8, N=8 with
 python3 -m pytest tests/ -q
 ```
 
-115 tests: shape/finiteness contracts, K<4 and S=0 and N=1 edge cases, the
+121 tests: shape/finiteness contracts, K<4 and S=0 and N=1 edge cases, the
 closed-form leave-one-out algebra against a naive O(K²) loop, the verl adapter
 under row shuffling, GSM8K answer extraction, spec conformance, and the claims
-above stated as assertions.
+above stated as assertions, plus CPU random-projection regression checks.
 
 ## Status
 
 - [x] Phase 1 — estimators, tests, synthetic validation (CPU only)
 - [x] Phase 0 — GPU env: torch 2.13.0+cu129, sm_120 gate passed, 14.5 GiB VRAM free
 - [x] Phase 2 — GRPO loop, Qwen2.5-0.5B-Instruct + GSM8K rule-based reward
-- [x] Phase 3 — gradient-variance measurement: JS two-level LOO lands at −21.4% [−51.5, −7.8]
+- [ ] Phase 3 — projection bug corrected; gradient-noise results require remeasurement
 - [ ] Phase 4 — verl PR

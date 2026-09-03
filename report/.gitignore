@@ -1,0 +1,7 @@
+
+# LaTeX build artefacts; report.pdf itself is committed
+report/*.aux
+report/*.fdb_latexmk
+report/*.fls
+report/*.log
+report/*.out
