@@ -49,3 +49,47 @@ def test_paired_projections_preserve_gradient_scaling():
     scaled = [2.0 * gradient for gradient in gradients]
     for m in range(24):
         assert project(scaled, m) == pytest.approx(2.0 * project(gradients, m))
+
+
+# ------------------------------------------------ pair estimator (no probes)
+from grad_variance import GradAccumulator
+
+
+def test_pair_estimator_recovers_trace_and_signal():
+    """g_b = mu + noise with known ||mu||^2 and tr Cov: disjoint consecutive
+    pairs give unbiased estimates of both without any probe."""
+    torch.manual_seed(5)
+    d, n = 40, 400
+    mu = torch.full((d,), 0.5)                          # ||mu||^2 = 10
+    scale = torch.linspace(0.05, 0.5, d)                # tr Cov = sum(scale^2)
+    acc = GradAccumulator(params=None)
+    for _ in range(n):
+        g = mu + scale * torch.randn(d)
+        acc.add([g[:25], g[25:]])                       # two "parameter tensors"
+    s = acc.summary(n_boot=200)
+    assert s["n_pairs"] == n // 2
+    assert s["pair_signal_sq"] == pytest.approx(float((mu ** 2).sum()), rel=0.05)
+    assert s["pair_trace_cov"] == pytest.approx(float((scale ** 2).sum()), rel=0.10)
+    assert s["pair_noise_ratio"] == pytest.approx(s["pair_trace_cov"] / s["pair_signal_sq"])
+    lo, hi = s["pair_signal_sq_ci"]
+    assert lo < float((mu ** 2).sum()) < hi
+    assert s["trace_cov_probe_se"] > 0
+
+
+def test_pairs_are_disjoint_and_the_held_gradient_is_released():
+    acc = GradAccumulator(params=None)
+    for i in range(5):
+        acc.add([torch.full((3,), float(i))])
+    assert len(acc.dots) == 2                           # (0,1), (2,3); 4 waits
+    assert acc.dots == [0.0, 3 * 2.0 * 3.0]             # <g0,g1> = 0, <g2,g3> = 3*2*3
+    assert acc._prev is not None                        # g4 held for a partner
+    acc.add([torch.full((3,), 5.0)])
+    assert acc._prev is None and len(acc.dots) == 3
+
+
+def test_pair_summary_degrades_without_enough_pairs():
+    acc = GradAccumulator(params=None)
+    for i in range(3):
+        acc.add([torch.randn(4)])
+    s = acc.summary(n_boot=10)
+    assert s["n_pairs"] == 1 and "pair_noise_ratio" not in s

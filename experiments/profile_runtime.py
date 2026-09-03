@@ -254,6 +254,7 @@ def main():
         return model.generate(input_ids=ids, attention_mask=mask,
                               do_sample=True, temperature=cfg.temperature,
                               top_p=cfg.top_p, top_k=0, use_cache=True,
+                              repetition_penalty=cfg.repetition_penalty,
                               max_new_tokens=args.decode_tokens, min_new_tokens=args.decode_tokens,
                               pad_token_id=tok.pad_token_id)
 

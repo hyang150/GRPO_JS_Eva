@@ -145,9 +145,20 @@ def test_js_fixed_over_shrinks_relative_to_js_pooled_on_binary_rewards():
     p = torch.rand(32) * 0.8 + 0.1
     r = (torch.rand(32, 8) < p.unsqueeze(1)).float()
 
-    s_fixed = shrink_factor(r, "js_fixed").mean()
-    s_pooled = shrink_factor(r, "js_pooled").mean()
+    s_fixed = shrink_factor(r, "js_fixed").nanmean()
+    s_pooled = shrink_factor(r, "js_pooled").nanmean()
     assert s_fixed < s_pooled, (s_fixed.item(), s_pooled.item())
+
+
+def test_shrink_factor_is_undefined_where_group_mean_equals_grand_mean():
+    """0/0 is NaN, not 1.0: counting such groups as 'unshrunk' inflated the
+    logged mean shrink (global read 0.025 in the seed-0 sweep, not 0)."""
+    r = torch.tensor([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [0.0, 0.0]])  # x = .5 .5 1 0, x_bar = .5
+    s = shrink_factor(r, "global")
+    assert s[:2].isnan().all()
+    assert torch.allclose(s[2:], torch.zeros(2))
+    assert s.nanmean().item() == 0.0
+    assert torch.allclose(shrink_factor(r, "vanilla")[2:], torch.ones(2))
 
 
 # ------------------------------------------------------------- verl adapter

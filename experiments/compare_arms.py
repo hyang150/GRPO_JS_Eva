@@ -15,6 +15,11 @@ from grpo_eva.evaluate import mcnemar
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
+def nanmean(xs):
+    xs = [x for x in xs if x == x]          # drop NaN (shrink undefined on a step)
+    return sum(xs) / len(xs) if xs else float("nan")
+
+
 def load(path):
     cfg, steps, evals = {}, [], []
     for line in path.read_text().splitlines():
@@ -70,7 +75,8 @@ def multi_seed(by_seed, arms, seeds, reference):
         print(line + f"{dm:>+16.1%} +-{ds / len(d) ** 0.5:>4.1%}{p:>14.4f}")
 
     print(f"\nnote: {len(seeds)} seeds put the run-to-run floor near "
-          f"{3.0 / len(seeds) ** 0.5:.1f} points; the effect under test is 0.6-1.0.")
+          f"{3.0 / len(seeds) ** 0.5:.1f} points; the effect under test is 0.65-1.5 "
+          f"(arXiv:2511.03710 Table 2, K=64, 500 steps, 5 seeds).")
 
 
 def _t_sf(t, df):
@@ -114,8 +120,15 @@ def main():
     by_seed = {}          # {(baseline, seed): (cfg, steps, evals)}
     for p in sorted((ROOT / "results").glob(args.glob)):
         cfg, steps, evals = load(p)
-        if steps:
-            by_seed[(cfg.get("baseline", p.stem), cfg.get("seed", 0))] = (cfg, steps, evals)
+        if not steps:
+            continue
+        want = cfg.get("steps")
+        # a run still in progress has an eval@0 but no final eval; reading
+        # evals[-1] as its result would score the untrained policy
+        if want is not None and not (evals and evals[-1].get("step") == want):
+            print(f"skip {p.name}: {len(steps)}/{want} steps, no final eval yet")
+            continue
+        by_seed[(cfg.get("baseline", p.stem), cfg.get("seed", 0))] = (cfg, steps, evals)
     if not by_seed:
         sys.exit(f"no runs matched results/{args.glob}")
 
@@ -143,7 +156,7 @@ def main():
         print(f"{arm:<11}{e0:>8.1%}{ef:>12.1%}{ef - e0:>+8.1%}"
               f"{st.fmean(s['accuracy'] for s in tail):>17.3f}"
               f"{st.fmean(s['degenerate_frac'] for s in tail):>8.2f}"
-              f"{st.fmean(s['shrink'] for s in tail):>9.3f}")
+              f"{nanmean(s['shrink'] for s in tail):>9.3f}")
 
     # ---- within an arm: did it actually improve? -------------------------
     print(f"\npaired McNemar, each arm's final eval vs its own eval@0")
@@ -171,6 +184,53 @@ def main():
 
     print("\nnote: 200 problems resolves a paired difference of roughly 5-6 points.\n"
           "A p above 0.05 here means 'not resolved at this scale', not 'no effect'.")
+
+    stability(runs, args.reference, seeds[0])
+
+
+def stability(runs, reference, seed):
+    """What GRPO.md's "训练更稳、收敛更快" would have to show up as.
+
+    Accuracy cannot resolve the effect (see the noise floor), but the
+    training log carries direct stability signals that every arm records on
+    the same prompt stream:
+
+      clipped    fraction of steps with grad_norm above the clip threshold
+      entropy    mean -logprob of sampled tokens, start -> last 10 steps
+                 (fast collapse = the policy sharpening, not learning)
+      adv_var    mean advantage variance -- the quantity shrinkage acts on
+      reward sd  sd of the per-step training reward over the last 30 steps
+      d reward   per-step reward minus the reference arm's, last 30 steps;
+                 same seed -> same prompts, so prompt difficulty cancels
+      noise/sig  median per-step gradient noise/signal, arXiv:2511.03710
+                 eq. 17-18 across micro-batches (needs --track-grad-var)
+    """
+    import statistics as st
+
+    print(f"\nstability, seed {seed}")
+    print(f"{'arm':<11}{'clipped':>9}{'entropy':>13}{'adv_var':>9}{'reward sd':>11}"
+          f"{'d reward vs ' + reference:>22}{'noise/sig':>11}")
+    ref_steps = runs[reference][1]
+    for arm, (_, steps, _) in runs.items():
+        gn = [s["grad_norm"] for s in steps]
+        clipped = sum(g > 1.0 for g in gn) / len(gn)          # GRPOConfig.grad_clip
+        ent = (f"{steps[0]['entropy_proxy']:.2f}->"
+               f"{nanmean(s['entropy_proxy'] for s in steps[-10:]):.2f}")
+        advv = nanmean(s["adv_var"] for s in steps)
+        tail = steps[-30:]
+        rsd = st.pstdev([s["accuracy"] for s in tail]) if len(tail) > 1 else float("nan")
+        n = min(len(steps), len(ref_steps))
+        d = [steps[i]["accuracy"] - ref_steps[i]["accuracy"] for i in range(n)][-30:]
+        dm = st.fmean(d) if d else float("nan")
+        dse = st.pstdev(d) / len(d) ** 0.5 if len(d) > 1 else float("nan")
+        nsr = [s["grad_noise_ratio"] for s in steps
+               if s.get("grad_noise_ratio") == s.get("grad_noise_ratio") and "grad_noise_ratio" in s]
+        nsr_txt = f"{st.median(nsr):.1f}" if nsr else "n/a"
+        print(f"{arm:<11}{clipped:>9.1%}{ent:>13}{advv:>9.3f}{rsd:>11.3f}"
+              f"{dm:>+14.3f} +-{dse:.3f}{nsr_txt:>11}")
+    print("note: 'clipped' counts grad_norm > 1.0; 'noise/sig' is logged only with "
+          "--track-grad-var.\nNone of these is a test of accuracy; they are the "
+          "stability claims the spec makes, measured.")
 
 
 if __name__ == "__main__":

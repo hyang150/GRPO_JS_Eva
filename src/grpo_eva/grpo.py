@@ -38,6 +38,21 @@ class GRPOConfig:
     max_new_tokens: int = 512
     temperature: float = 1.0
     top_p: float = 1.0
+    # Explicit on purpose.  Anything not passed to generate() falls through to
+    # the checkpoint's generation_config, and Qwen2.5-Instruct ships
+    # repetition_penalty=1.1 there.  A penalised sampler is not the policy the
+    # logprobs describe: with 1.1 every rollout is off-policy and the gradient
+    # is biased, for every baseline alike.  1.0 is what TRL and verl use.
+    repetition_penalty: float = 1.0
+    # Per-step gradient variance, eq. 17-18 of arXiv:2511.03710: with m
+    # micro-batches, Var = 1/(m(m-1)) sum_i ||g_i - g_bar||^2 and
+    # ||E g||^2 = ||g_bar||^2 - Var.  This is the paper's own stability
+    # instrument and the only direct test of GRPO.md's "训练更稳" claim.
+    # Costs one CPU copy of the gradient per micro-batch (~1.5 s/step at
+    # K=8 x N=8).  With micro_batch == n_generations each g_i is one prompt's
+    # gradient.  Under precision="bf16" the accumulated gradient is bf16, so
+    # the differencing G_i - G_{i-1} carries ~0.4% relative error per element.
+    track_grad_var: bool = False
     epsilon: float = 0.2            # PPO clip
     grad_clip: float = 1.0
     scale: str = "none"             # none | group | batch
@@ -47,10 +62,21 @@ class GRPOConfig:
     seed: int = 0
 
 
-def _completion_mask(completion_ids: torch.Tensor, eos_id: int) -> torch.Tensor:
-    """1 up to and including the first EOS, 0 after it."""
+def _completion_mask(completion_ids: torch.Tensor, stop_ids) -> torch.Tensor:
+    """1 up to and including the first stop token, 0 after it.
+
+    ``stop_ids`` must cover every id generate() can finish on *and* the pad
+    id it fills with afterwards.  Qwen2.5 has two terminators -- the chat
+    ``<|im_end|>`` (tokenizer.eos_token) and ``<|endoftext|>``, which is also
+    its pad token -- and generation_config lists both.  Matching only
+    tokenizer.eos_token_id leaves a completion that stopped on
+    ``<|endoftext|>`` unmasked through its padding, so the pad tokens get
+    logprobs, gradient and a place in ``completion_len``.
+    """
     b, c = completion_ids.shape
-    is_eos = completion_ids == eos_id
+    ids = torch.as_tensor(sorted({int(i) for i in stop_ids}),
+                          device=completion_ids.device)
+    is_eos = torch.isin(completion_ids, ids)
     idx = torch.full((b,), c - 1, dtype=torch.long, device=completion_ids.device)
     has = is_eos.any(dim=1)
     idx[has] = is_eos.int().argmax(dim=1)[has]
@@ -58,7 +84,42 @@ def _completion_mask(completion_ids: torch.Tensor, eos_id: int) -> torch.Tensor:
     return (ar <= idx.unsqueeze(1)).to(torch.float32)
 
 
+def micro_batch_grad_stats(micro_sq: list[float], total_sq: float) -> dict:
+    """Eq. 17-18 of arXiv:2511.03710 on one step's m micro-batch gradients.
+
+    ``micro_sq[i]`` is ||g_i||^2 of the i-th micro-batch contribution and
+    ``total_sq`` is ||sum_i g_i||^2.  Since sum_i ||g_i - g_bar||^2 =
+    sum_i ||g_i||^2 - ||sum_i g_i||^2 / m, neither g_bar nor the individual
+    g_i need to be kept.  Returns the variance of the step's mean gradient,
+    the unbiased signal ||E g||^2 = ||g_bar||^2 - Var, and their ratio --
+    scale-free, so it does not matter that each g_i here is 1/m of the
+    paper's micro-batch gradient.
+    """
+    m = len(micro_sq)
+    nan = float("nan")
+    if m < 2:
+        return {"grad_var": nan, "grad_signal_sq": nan, "grad_noise_ratio": nan}
+    var = (sum(micro_sq) - total_sq / m) / (m * (m - 1))
+    signal = total_sq / m ** 2 - var
+    return {"grad_var": var, "grad_signal_sq": signal,
+            "grad_noise_ratio": var / signal if signal > 0 else nan}
+
+
 class GRPO:
+    @staticmethod
+    def _contribution_sq(params, prev) -> float:
+        """||g_i||^2 of the latest micro-batch from the accumulated gradient:
+        g_i = G_i - G_{i-1}, with G_{i-1} held as a CPU copy."""
+        total = 0.0
+        for j, q in enumerate(params):
+            if q.grad is None:
+                continue
+            g = q.grad.detach().float()
+            if prev is not None and prev[j] is not None:
+                g = g - prev[j].to(g.device).float()
+            total += float((g * g).sum())
+        return total
+
     def autocast(self):
         """bf16 compute, with or without fp32 master weights.
 
@@ -87,6 +148,11 @@ class GRPO:
         self.opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, betas=(0.9, 0.95),
                                      weight_decay=0.0, eps=1e-8)
         self.device = next(model.parameters()).device
+        # every id generate() can stop on, plus the pad it fills with after
+        gen_eos = getattr(getattr(model, "generation_config", None), "eos_token_id", None)
+        gen_eos = [] if gen_eos is None else ([gen_eos] if isinstance(gen_eos, int) else list(gen_eos))
+        self._stop_ids = {int(i) for i in gen_eos + [tokenizer.eos_token_id, tokenizer.pad_token_id]
+                          if i is not None}
         # a fixed sample of tensors, so the update-precision probe costs
         # ~1e-3 of a step instead of comparing all 494M parameters
         named = [(n, q) for n, q in model.named_parameters() if q.requires_grad]
@@ -125,6 +191,7 @@ class GRPO:
                 num_return_sequences=self.cfg.n_generations,
                 do_sample=True, temperature=self.cfg.temperature,
                 top_p=self.cfg.top_p, top_k=0,
+                repetition_penalty=self.cfg.repetition_penalty,
                 max_new_tokens=self.cfg.max_new_tokens,
                 pad_token_id=self.tok.pad_token_id,
                 use_cache=True,
@@ -136,7 +203,7 @@ class GRPO:
         seq = torch.cat(outs, dim=0)
 
         completion_ids = seq[:, prompt_len:]
-        cmask = _completion_mask(completion_ids, self.tok.eos_token_id)
+        cmask = _completion_mask(completion_ids, self._stop_ids)
         pmask = enc.attention_mask.repeat_interleave(self.cfg.n_generations, dim=0)
         attn = torch.cat([pmask, cmask.to(pmask.dtype)], dim=1)
         texts = self.tok.batch_decode(completion_ids, skip_special_tokens=True)
@@ -194,7 +261,9 @@ class GRPO:
 
         total_loss = kl_sum = clip_frac = 0.0
         n_micro = 0
-        for _ in range(cfg.num_iterations):        # mu: ratio != 1 after the first
+        params = [q for q in self.model.parameters() if q.requires_grad]
+        micro_sq, prev_acc, grad_stats = [], None, {}
+        for it in range(cfg.num_iterations):       # mu: ratio != 1 after the first
             self.opt.zero_grad(set_to_none=True)
             for i in range(0, seq.shape[0], mb):
                 sl = slice(i, i + mb)
@@ -220,6 +289,10 @@ class GRPO:
                 else:
                     loss = per_tok.sum() / denom
                 loss.backward()
+                if cfg.track_grad_var and it == 0:     # the on-policy pass only
+                    micro_sq.append(self._contribution_sq(params, prev_acc))
+                    prev_acc = [None if q.grad is None else q.grad.detach().to("cpu", copy=True)
+                                for q in params]
 
                 with torch.no_grad():
                     clip_frac += float((((ratio < 1 - cfg.epsilon) & (a < 0)) |
@@ -229,6 +302,12 @@ class GRPO:
                 total_loss += loss.item()
                 n_micro += 1
 
+            if cfg.track_grad_var and it == 0:
+                # ||G||^2 in fp32 before clipping (clip_grad_norm_ reduces in bf16)
+                total_sq = sum(float((q.grad.detach().float() ** 2).sum())
+                               for q in params if q.grad is not None)
+                grad_stats = micro_batch_grad_stats(micro_sq, total_sq)
+                prev_acc = None
             gnorm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), cfg.grad_clip)
             if cfg.track_update_precision:
                 probe_before = [q.detach().clone() for q in self._probe]
@@ -239,6 +318,10 @@ class GRPO:
                 update_frac = moved / total
 
         grp = rewards.sum(dim=1)
+        # NaN where a group mean coincides with the grand mean (shrinkage
+        # undefined there); average over the groups that define it
+        shrink = shrink_factor(rewards, cfg.baseline)
+        shrink = shrink[~shrink.isnan()]
         out = {
             "loss": total_loss,
             "reward_mean": rewards.mean().item(),
@@ -248,7 +331,7 @@ class GRPO:
             "adv_abs_mean": adv.abs().mean().item(),
             "degenerate_frac": (((grp == 0) | (grp == cfg.n_generations))
                                 .float().mean().item()),
-            "shrink": shrink_factor(rewards, cfg.baseline).mean().item(),
+            "shrink": shrink.mean().item() if shrink.numel() else float("nan"),
             "grad_norm": gnorm.item(),
             "kl": kl_sum / max(n_micro, 1),
             "clip_frac": clip_frac / max(n_micro, 1),
@@ -257,6 +340,7 @@ class GRPO:
             "sec_gen": t_gen,
             "sec_total": time.time() - t0,
             "vram_gb": torch.cuda.max_memory_allocated() / 2**30,
+            **grad_stats,     # grad_var / grad_signal_sq / grad_noise_ratio when tracked
         }
         if cfg.track_update_precision:
             # fraction of sampled weights the optimizer step actually moved;

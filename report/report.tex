@@ -34,21 +34,25 @@ the batch mean. I implemented the specification, six baselines behind one
 registry, and measured them on Qwen2.5-0.5B-Instruct / GSM8K on a single
 RTX~5080.
 
-Three findings. \textbf{(i)} The specification as written does not work: its
-$V=1/N$ assumes unit per-sample reward variance, but $0/1$ correctness rewards
-have $p(1-p)\le\tfrac14$. The shrinkage factor collapses and the estimator
+Three findings. \textbf{(i)} The specification's formula applied to raw $0/1$
+rewards does not work: its $V=1/N$ assumes the unit per-sample reward variance
+the specification says to establish first, but $0/1$ correctness rewards have
+$p(1-p)\le\tfrac14$ and the pseudocode takes the raw matrix. The shrinkage factor collapses and the estimator
 degenerates into the global mean --- and it does so \emph{monotonically in
 $K$}, so it fails harder at the batch sizes GRPO is actually deployed at.
-\textbf{(ii)} Estimating $V$ from the data instead reproduces the published
-claim: the two-level leave-one-out variant reaches
-$-21.4\%$ $[-51.5,-7.8]$ gradient noise, inside the $11.2$--$67.1\%$ band
-reported by Zeng et al.~\cite{zeng2025shrinking}. \textbf{(iii)} The
+\textbf{(ii)} Estimating $V$ from the data --- equivalently, applying the
+specification after the reward rescaling it assumes --- lowers the baseline's
+MSE by 16--54\% in simulation. The gradient-noise reduction an earlier draft
+of this report claimed ($-21.4\%$ $[-51.5,-7.8]$) came from a projection with
+a bug and from rollouts drawn with a repetition penalty the policy does not
+have (Sec.~\ref{sec:corrections}); it is withdrawn pending remeasurement.
+\textbf{(iii)} The
 specification's optional ``divide by the within-group standard deviation'' is
 unsafe in combination with shrinkage, inflating advantages by $10^4$.
 
 I also report a measurement I think matters more than any of the above: two
 runs of the \emph{same} configuration at the \emph{same} seed end $3.0$
-accuracy points apart. The effect under test is $0.6$--$1.0$ points. This is
+accuracy points apart. The effect under test is $0.65$--$1.5$ points. This is
 why the headline measurement here is gradient noise on paired rollouts rather
 than end-to-end accuracy.
 \end{abstract}
@@ -66,6 +70,50 @@ the \emph{baseline}, not the reward function.
 (7473 train / 1319 test), rule-based verifiable reward (no reward model), one
 RTX~5080 (16\,GB, sm\_120). $K=8$ prompts $\times\,N=8$ generations, 512 new
 tokens, bf16 with gradient checkpointing; 11.0\,GiB peak, ${\sim}25$\,s/step.
+
+\section{Corrections (2026-09-04)}
+\label{sec:corrections}
+
+Four defects were found in review after the first draft. All are fixed in
+the code; none of the numbers below has been re-measured since.
+
+\begin{enumerate}\itemsep2pt
+\item \textbf{Off-policy rollouts.} \texttt{generate()} set temperature,
+      top-$p$ and top-$k$ but not \texttt{repetition\_penalty}, which fell
+      through to the checkpoint's \texttt{generation\_config} --- 1.1 for
+      Qwen2.5-Instruct. Completions were sampled from a penalised
+      distribution while the loss used the raw policy's log-probabilities:
+      off-policy without an importance correction, in every arm of every
+      experiment (training sweep, gradient measurement, evaluation, prompt
+      selection). The loop now passes 1.0 explicitly. Between-arm
+      comparisons remain paired and internally consistent, but they compare
+      baselines under a sampler that is not $\pi_\theta$.
+\item \textbf{Projection bug in the gradient measurement.} The Hutchinson
+      probes reused random entries across equal-shaped parameter tensors, so
+      the covariance estimate was invalid. Fixed (continuous stream per
+      probe); Sec.~\ref{sec:gradvar} is therefore historical.
+\item \textbf{Completion mask.} Only \texttt{<|im\_end|>} counted as a stop
+      token; Qwen2.5 also stops on \texttt{<|endoftext|>}, which is its pad
+      token, so such a completion was scored as 512 valid tokens including
+      padding. The mask now stops on every terminator plus the pad id.
+\item \textbf{Shrinkage diagnostic.} Groups whose mean equals the grand mean
+      were logged as ``unshrunk'' (1.0) rather than undefined; this is why
+      \texttt{global} shows $0.025$ in Table~\ref{tab:sweep} instead of its
+      definitional $0$.
+\end{enumerate}
+
+Beyond the bugs, the noise/signal ratio itself was fragile: $\lVert\E[g]\rVert^2$
+was obtained as the exact $\E\lVert g\rVert^2$ minus the probe estimate of
+$\trcov(g)$, and it is only 8\% of $\E\lVert g\rVert^2$ here, so a few percent
+of probe error --- which more batches do not reduce --- dominates the ratio.
+The re-measurement will use, alongside the probes, an exact probe-free
+estimator: for independent batches $\E\langle g_b,g_{b'}\rangle=\lVert\E[g]\rVert^2$,
+so disjoint consecutive pairs of batches give unbiased samples of both
+$\lVert\E[g]\rVert^2$ and $\E\lVert g\rVert^2$ (the paper's own instrument,
+its eq.~17--18, is the same idea across micro-batches). The training loop now
+also logs that per-step estimator on request, so the specification's
+stability claim can be compared across arms on the same batches; the
+small-$N$ runs the specification motivates are planned with it.
 
 \section{Method}
 
@@ -123,11 +171,97 @@ interpretable: without it, ``James--Stein helps'' cannot be told apart from
 \end{table}
 
 Implementation follows verl's \texttt{register\_adv\_est} registry so any
-estimator here drops into that framework through a thin adapter. 115 tests,
+estimator here drops into that framework through a thin adapter. 162 tests,
 including a literal transcription of the specification's ten steps asserted
-against the implementation to $10^{-12}$.
+against the implementation to $10^{-12}$, and the identity
+\texttt{js\_pooled} $=$ specification applied to rewards divided by the
+pooled within-group standard deviation --- i.e.\ the specification with its
+own $\sigma^2\approx1$ precondition honoured.
+
+\subsection{Provenance, and conformance with the listing}
+\label{sec:conformance}
+
+Two documents feed the code, in different roles. Everything the policy is
+trained with comes from \texttt{GRPO.md}; the paper of Zeng et
+al.~\cite{zeng2025shrinking} contributes one optional comparison arm and one
+diagnostic, neither of which touches the update.
+
+\begin{table}[h]\centering\small
+\begin{tabular}{llp{6.0cm}}
+\toprule
+component & source & role \\
+\midrule
+\texttt{js\_fixed}   & \texttt{GRPO.md} Sec.~3.2--3.3, verbatim & the training path under test \\
+\texttt{js\_pooled}  & \texttt{GRPO.md} Sec.~3.2 after the Sec.~2 rescaling & the same ten steps on $r/\sigma_{\text{pooled}}$, scaled back; identity pinned to $10^{-12}$ \\
+\texttt{vanilla}, \texttt{global}, \texttt{rloo} & standard & GRPO itself, the collapse limit, the unbiased control \\
+\texttt{js\_loo}     & Zeng et al.\ eq.~10, 13--16 & optional comparison arm; runs only when named \\
+\texttt{--track-grad-var} & Zeng et al.\ eq.~17--18 & per-step gradient variance; a log column, off by default \\
+EBPO~\cite{han2026ebpo} & --- & cited, not implemented \\
+\bottomrule
+\end{tabular}
+\caption{What comes from where. The comparison arm and the variance
+diagnostic are the only two things taken from the paper.}
+\end{table}
+
+\paragraph{The listing, run as written.}
+\texttt{tests/test\_spec\_conformance.py} transcribes the ten steps of Sec.~3.2
+and, separately, the Python listing of Sec.~3.3 character for character, and
+runs both against the implementation. Away from the edge cases the listing
+and \texttt{js\_fixed} agree to $10^{-12}$ on continuous and on $0/1$
+rewards. On its own edge cases the listing does not run:
+
+\begin{center}\small
+\begin{tabular}{lp{8.6cm}}
+\toprule
+input & behaviour of the listing \\
+\midrule
+$K<4$ & \texttt{IndexError}: $\bar X$ is a 0-d tensor, so \texttt{unsqueeze(1)} is out of range \\
+$S=0$ (every group mean equal) & \texttt{TypeError}: Python's \texttt{max(S, eps)} returns the float \texttt{eps} once $S<\varepsilon$, and \texttt{torch.clamp} rejects a float \\
+$K=8$, $N=8$, $0/1$ rewards, $S>0$ & runs, and equals \texttt{js\_fixed} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Five latent defects in the specification.}
+Each is handled in the code and asserted by a test; none changes the
+estimator where the specification is well defined.
+\begin{enumerate}\itemsep2pt
+\item \textbf{Step 7 is unreachable.} The prose says ``$S=0\Rightarrow$
+      shrink factor $1$''; the listing crashes before reaching it, on exactly
+      the case it claims to handle --- and that case occurs at $K=8$ with
+      $0/1$ rewards. We clamp to $0$ instead, which is observationally
+      identical: $S=0$ forces $\mathrm{diff}=0$, so $\tilde\mu_k=\bar X$ for
+      any factor.
+\item \textbf{Step 5 contradicts the listing.} The prose returns the
+      per-group means for $K<4$; the listing, once its indexing is repaired,
+      returns rewards centred on the \emph{global} mean --- the
+      \texttt{global} arm, which is no longer GRPO. We follow the prose.
+\item \textbf{The Sec.~2 precondition is missing from the listing.} The theory
+      assumes rewards rescaled so that $\sigma^2\approx1$, which is where
+      $V=1/N$ comes from; the listing takes the raw matrix. With $0/1$
+      rewards $\sigma^2\le\tfrac14$, so $c$ is at least $4\times$ too large:
+      the shrink factor averages $0.2$ at $K=8$ and meets the global mean by
+      $K=32$ (Sec.~\ref{sec:collapse}). \texttt{js\_pooled} is the listing
+      with the rescaling restored, using the pooled within-group standard
+      deviation because the per-group one is $0$ for 30--40\% of groups.
+\item \textbf{The optional ``divide by the within-group std'' is unsafe
+      under shrinkage.} A degenerate group has std $0$ and, by design, a
+      non-zero shrunk advantage, so $A/(0+10^{-4})$ scales it by $10^4$
+      (Sec.~\ref{sec:footgun}).
+\item \textbf{Stein's guarantee does not transfer as stated.} It needs a
+      common, known $V$ and $K\ge4$; Bernoulli rewards have
+      $V_k=p_k(1-p_k)/N$, different for every prompt and overstated
+      $4\times$ by $V=1/N$. And a lower-MSE baseline is not an unbiased
+      gradient: the shrunk $\tilde\mu_k$ depends on $r_i^{(k)}$ itself, so
+      only the leave-one-out variants (\texttt{rloo}, \texttt{js\_loo}) keep
+      the policy gradient unbiased. The specification's ``more stable, faster
+      convergence, smaller $N$'' comes with no measurement; the variance
+      diagnostic and the small-$N$ runs of Sec.~\ref{sec:corrections} exist
+      to supply one.
+\end{enumerate}
 
 \section{Result 1: the specification collapses onto the global mean}
+\label{sec:collapse}
 
 Ground truth is unavailable on GSM8K, so this is measured in simulation:
 $p_k\sim\mathrm{Beta}(1.2,2.2)$ (mean $0.35$, matching the model's observed
@@ -164,7 +298,12 @@ wrong.
 and its advantage grows as $N$ shrinks --- the regime the method targets.}
 \end{figure}
 
-\section{Result 2: estimating $V$ reproduces the published claim}
+\section{Result 2 (withdrawn): the historical gradient-noise measurement}
+\label{sec:gradvar}
+
+\textbf{Every number in this section was produced by the buggy projection
+and the 1.1 sampler of Sec.~\ref{sec:corrections}. It is kept as a record of
+the instrument, not as a result.}
 
 Comparing training runs is the wrong instrument for this (Sec.~\ref{sec:floor}).
 Instead every baseline scores the \emph{same} rollouts, so rollout randomness
@@ -187,8 +326,9 @@ baseline & noise/signal & vs GRPO & 95\% CI & \\
 \texttt{global}     & 5.8  & $-49.7\%$  & $[-83.5,-15.6]$  & biased --- see below \\
 \bottomrule
 \end{tabular}
-\caption{200 paired batches, $K=8\times N=8$, mean accuracy 29.1\%. Intervals
-are a paired bootstrap over batches.}
+\caption{Historical, unvalidated: 200 paired batches, $K=8\times N=8$, mean
+accuracy 29.1\%. Intervals are a paired bootstrap over batches, conditional on
+the 24 probes.}
 \end{table}
 
 \paragraph{\texttt{js\_fixed} and \texttt{global} look best here, and that
@@ -211,6 +351,7 @@ Zeng et al. Hollow markers are biased estimators, not comparable at face value.}
 \end{figure}
 
 \section{Result 3: the standard-deviation variant is a footgun}
+\label{sec:footgun}
 
 The specification offers ``divide by the within-group standard deviation
 afterwards'' as an option. Under plain GRPO that is safe on a degenerate group
@@ -241,8 +382,10 @@ in training: \texttt{torch.manual\_seed} does not make sampled generation
 reproducible on GPU.}
 \end{table}
 
-The noise floor is $3.0$ points. The effect reported for this exact setting is
-$0.6$--$1.0$ points \cite{zeng2025shrinking} --- three to five times smaller.
+The noise floor is $3.0$ points. The effect reported for this setting is
+$0.65$--$1.5$ points (Table~2 of \cite{zeng2025shrinking}: JS minus GRPO at
+$N=8/4/2$, $K=64$, 500 steps, five seeds) --- two to five times smaller, and
+this report runs $K=8$ for 150 steps.
 End-to-end accuracy cannot resolve it on one GPU, and any single-seed accuracy
 comparison at this scale, in either direction, is an artefact.
 
@@ -268,7 +411,9 @@ arm & eval@0 & eval@final & $\Delta$ & $p$ & $\shrink$ & collapsed \\
 \end{tabular}
 \caption{$p$ is a paired McNemar of each arm's final checkpoint against its own
 \texttt{eval@0}. $\shrink$ is the mean over the last 30 steps; ``collapsed''
-counts steps with $\shrink<0.01$.}
+counts steps with $\shrink<0.01$. All arms sampled with the 1.1 repetition
+penalty (Sec.~\ref{sec:corrections}); \texttt{global}'s $0.025$ is the
+diagnostic artefact described there.}
 \label{tab:sweep}
 \end{table}
 
@@ -326,11 +471,12 @@ as stalled training.}
 \item \textbf{48 batches was not enough} for the gradient measurement --- every
       interval crossed zero. The reported result needed 200. Effect sizes should
       not be read off short runs here.
-\item \textbf{\texttt{js\_loo}'s $(n-1)/n$ factor is unverified} against the
-      paper's PDF (OpenReview blocks automated access); it was transcribed from
-      the arXiv HTML. \texttt{baselines.py} exposes a switch. That
-      \texttt{js\_pooled}, derived independently, lands nearby (9.9 vs 9.1) is
-      reassuring but not a substitute. \todo{check against the PDF}
+\item \textbf{\texttt{js\_loo} is verified} against the arXiv PDF (Sec.~3.3,
+      eq.~10 and 13--16; the $(n-1)/n$ factor is eq.~15).
+\item \textbf{The specification's own regime is untested on the GPU.} Its
+      motivation is small $N$; every training and gradient run here is
+      $N=8$, $K=8$, and no stability metric (clip events, entropy, reward-curve
+      variance) has been compared across arms.
 \item \textbf{Single model, single task.} Whether the collapse threshold moves
       with reward density is untested.
 \end{itemize}
@@ -339,7 +485,7 @@ as stalled training.}
 
 \begin{verbatim}
 uv sync && python main.py smoke        # torch cu129; the RTX 5080 is sm_120
-python -m pytest tests/ -q             # 115 tests
+python -m pytest tests/ -q             # 162 tests
 python main.py synthetic --k 4 8 16 32 64 --n 8
 python main.py gradvar --batches 200
 python main.py sweep --baselines vanilla js_fixed js_pooled js_loo global
@@ -347,7 +493,8 @@ python main.py compare
 \end{verbatim}
 
 \todo{repo link}
-\todo{single seed per arm; a second seed would at least bound the run-to-run term}
+\todo{single seed per arm; a second seed (in progress) would at least bound the run-to-run term}
+\todo{re-measure everything with the 1.0 sampler before any number above is quoted}
 
 \begin{thebibliography}{9}\small
 \bibitem{shao2024deepseekmath} Z. Shao et al.
