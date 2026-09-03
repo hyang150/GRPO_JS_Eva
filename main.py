@@ -136,6 +136,8 @@ def _train_one(args, tok, model, ref, tag):
                      max_new_tokens=args.max_new_tokens, temperature=args.temperature,
                      micro_batch=args.micro_batch, gen_micro_batch=args.k * args.n,
                      seed=args.seed)
+    import torch
+    torch.cuda.reset_peak_memory_stats()      # else arm 2 reports arm 1's peak
     trainer = GRPO(model, tok, cfg, ref_model=ref)
     data = load_gsm8k(tok, "train")
     rng = random.Random(args.seed)
@@ -191,17 +193,25 @@ def cmd_train(args):
 
 def cmd_sweep(args):
     """Same seed, same prompts, one arm per baseline -- a paired A/B."""
-    import copy
+    import copy, gc
+
+    import torch
+
     for b in args.baselines:
         a = copy.copy(args)
         a.baseline = b
-        # fresh policy per arm; identical seed means identical prompt stream
+        # Fresh policy per arm from the same seed, so every arm walks the same
+        # prompt stream and starts from the same rollouts -- a paired A/B.
         tok, model, ref = build(a, need_ref=a.beta > 0)
-        _train_one(a, tok, model, ref, f"{b}_k{a.k}n{a.n}_s{a.seed}")
-        del model, ref
-        import torch, gc
-        gc.collect()
-        torch.cuda.empty_cache()
+        try:
+            _train_one(a, tok, model, ref, f"{b}_k{a.k}n{a.n}_s{a.seed}")
+        finally:
+            del model, ref, tok
+            gc.collect()
+            torch.cuda.empty_cache()
+            free, total = torch.cuda.mem_get_info()
+            print(f"       vram released: {free / 2**30:.1f} of "
+                  f"{total / 2**30:.1f} GiB free\n", flush=True)
     return 0
 
 
@@ -260,6 +270,12 @@ def main():
     add_model_args(p)
     p.add_argument("--n-problems", type=int, default=60)
     p.set_defaults(fn=cmd_prompt)
+
+    p = sub.add_parser("compare", help="paired McNemar across sweep arms")
+    p.add_argument("--reference", default="vanilla")
+    p.set_defaults(fn=lambda a: subprocess.call(
+        [sys.executable, str(ROOT / "experiments/compare_arms.py"),
+         "--reference", a.reference]))
 
     p = sub.add_parser("figures", help="regenerate every figure from saved results")
     p.set_defaults(fn=cmd_figures)
