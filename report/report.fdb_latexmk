@@ -1,8 +1,8 @@
 # Fdb version 3
-["pdflatex"] 1788425864 "report.tex" "report.pdf" "report" 1788425864
-  "../results//fig1_synthetic_mse.pdf" 1788356254 57959 d422b355f7d42cddec3f75e58fb6a5d5 ""
-  "../results//fig2_grad_variance.pdf" 1788382008 55000 9f100790f6646a70680fba2412a1327d ""
-  "../results//fig3_training.pdf" 1788416885 48836 2fb41a4a22ff91a5d48fa6360baa405a ""
+["pdflatex"] 1788431323 "report.tex" "report.pdf" "report" 1788431326
+  "../results//fig1_synthetic_mse.pdf" 1788431262 64726 c50602261b7709c057a65355651b421c ""
+  "../results//fig2_grad_variance.pdf" 1788431263 58304 c012ca7bdb258b7ce84ebbd708c7a0fc ""
+  "../results//fig3_training.pdf" 1788431264 75572 412eae3bbd294847b19ad85381b6e28c ""
   "/etc/texmf/web2c/texmf.cnf" 1784096952 475 c0e671620eb5563b2130f56340a5fde8 ""
   "/home/hyang150/.texlive2021/texmf-var/fonts/pk/ljfour/jknappen/ec/tcrm1095.600pk" 1788425864 12644 c4de022a81feba521881bbe676a59327 ""
   "/usr/share/texlive/texmf-dist/fonts/map/fontname/texfonts.map" 1577235249 3524 cb3e574dea2d1052e39280babc910dc8 ""
@@ -121,9 +121,9 @@
   "/usr/share/texmf/web2c/texmf.cnf" 1644012257 39432 7155514e09a3d69036fac785183a21c2 ""
   "/var/lib/texmf/fonts/map/pdftex/updmap/pdftex.map" 1784102458 39849 b82b7b518a1b7609715daeda51f3d2dc ""
   "/var/lib/texmf/web2c/pdftex/pdflatex.fmt" 1784096959 1406109 d059244f51edbde62a773c0aa9c7fe33 ""
-  "report.aux" 1788425864 5591 3fa372ca6dbe38af76c7568dabf378f4 "pdflatex"
-  "report.out" 1788425864 2195 218f458d5447e03b9dafb306b2eebc0c "pdflatex"
-  "report.tex" 1788425863 14911 c969bbfbc8e446a1e74f338aef1a2106 ""
+  "report.aux" 1788431326 6186 fbfcb0bd93bbc899bd42ec82f4610e8a "pdflatex"
+  "report.out" 1788431326 2195 218f458d5447e03b9dafb306b2eebc0c "pdflatex"
+  "report.tex" 1788431322 17012 778caa957f67e454caccf6c5dcd539d0 ""
   (generated)
   "report.aux"
   "report.log"

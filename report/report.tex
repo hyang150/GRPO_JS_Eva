@@ -249,33 +249,70 @@ comparison at this scale, in either direction, is an artefact.
 \section{Training runs}
 
 Five arms, 150 steps each, identical seed so every arm walks the same prompt
-stream (verified: identical reward and degenerate-group fractions at step 0).
+stream (verified: identical reward and degenerate-group fractions at step~0).
+Every arm evaluates the same 200 test problems in the same order, so
+checkpoints are compared with McNemar rather than by overlapping binomial
+intervals.
 
 \begin{table}[h]\centering\small
-\begin{tabular}{lrrrrr}
+\begin{tabular}{lrrrrrr}
 \toprule
-arm & eval@0 & eval@final & $\shrink$ (mean) & fully collapsed & degenerate groups \\
+arm & eval@0 & eval@final & $\Delta$ & $p$ & $\shrink$ & collapsed \\
 \midrule
-\texttt{vanilla}    & 42.5\% & 45.5\% & 1.000 & --- & 35\%$\to$20\% \\
-\texttt{js\_fixed}  & 42.5\% & 47.0\% & 0.161 & 64/150 steps & 30\% \\
-\texttt{js\_pooled} & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} \\
-\texttt{js\_loo}    & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} \\
-\texttt{global}     & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} \\
+\texttt{vanilla}    & 42.5\% & 45.5\% & $+3.0$ & 0.24 & 1.000 & 0/150 \\
+\texttt{js\_pooled} & 42.5\% & 45.0\% & $+2.5$ & 0.27 & 0.850 & 1/150 \\
+\texttt{js\_loo}    & 42.5\% & 45.5\% & $+3.0$ & 0.21 & 0.818 & 0/150 \\
+\texttt{js\_fixed}  & 42.5\% & 47.0\% & $+4.5$ & 0.11 & 0.202 & 64/150 \\
+\texttt{global}     & 42.5\% & 47.5\% & $+5.0$ & 0.06 & 0.025 & 133/150 \\
 \bottomrule
 \end{tabular}
-\caption{\todo{fill from \texttt{python main.py compare} once the sweep
-finishes}. Accuracy differences here are smaller than the $3.0$-point noise
-floor and are reported for completeness, not as evidence.}
+\caption{$p$ is a paired McNemar of each arm's final checkpoint against its own
+\texttt{eval@0}. $\shrink$ is the mean over the last 30 steps; ``collapsed''
+counts steps with $\shrink<0.01$.}
+\label{tab:sweep}
 \end{table}
 
-\todo{The load-bearing question for this table is structural, not accuracy:
-does \texttt{js\_fixed}'s trajectory coincide with \texttt{global}'s? If it
-does, that is a fifth independent confirmation of Result 1.}
+\paragraph{Nothing here is significant, in either direction.} No arm improves
+on its own starting point at $p<0.05$, and no arm differs from
+\texttt{vanilla}: against \texttt{vanilla}'s final checkpoint,
+\texttt{global} is $+2.0$ ($p=0.54$), \texttt{js\_fixed} $+1.5$ ($p=0.68$),
+\texttt{js\_loo} $+0.0$ ($p=1.00$), \texttt{js\_pooled} $-0.5$ ($p=1.00$).
+This is exactly what Sec.~\ref{sec:floor} predicts: the spread across all five
+arms is 2.5 points, below the 3.0-point floor a single arm shows against
+itself. \textbf{The sweep does not show that shrinkage helps training, and it
+was not capable of showing it.}
+
+It is worth naming the trap in Table~\ref{tab:sweep}: \texttt{global} has the
+largest nominal gain. Read without the $p$ column it says ``throw away the
+group structure entirely and GRPO improves'', which is both unsupported and
+contrary to Sec.~\ref{sec:floor}.
+
+\paragraph{What the sweep does establish is structural.} The shrinkage column
+separates cleanly into three tiers that accuracy cannot resolve but the
+estimator's own behaviour makes unambiguous:
+
+\begin{center}\small
+\texttt{vanilla} $1.000$ \quad$\gg$\quad
+\texttt{js\_pooled} $0.850$, \texttt{js\_loo} $0.818$ \quad$\gg$\quad
+\texttt{js\_fixed} $0.202$ \quad$\gg$\quad \texttt{global} $0.025$
+\end{center}
+
+The two corrected variants retain ${\sim}82$--$85\%$ of the group structure ---
+mild shrinkage, which is what Stein's result asks for --- while the specified
+estimator retains $20\%$ and discards it outright on $43\%$ of steps. That
+\texttt{js\_pooled} and \texttt{js\_loo}, derived independently, land within
+$0.03$ of each other is mutual corroboration; it also raises confidence in the
+$(n-1)/n$ factor I could not verify against the paper.
+
+At $K=8$, \texttt{js\_fixed} is degraded but not identical to \texttt{global}
+($0.202$ vs $0.025$). Full coincidence needs larger $K$, as Table~2 shows ---
+which is the deployment regime, not this one.
 
 \begin{figure}[h]\centering
 \includegraphics[width=\textwidth]{fig3_training.pdf}
-\caption{\todo{regenerate once all five arms are present}. Faint lines are
-per-step values; bold is a rolling window --- median for the gradient norm,
+\caption{All five arms. Reward and degenerate-group panels overlap almost
+exactly; the shrinkage panel separates into three tiers. Faint lines are
+per-step values, bold is a rolling window --- median for the gradient norm,
 which is spiky enough that a rolling mean manufactures flat plateaus that read
 as stalled training.}
 \end{figure}
@@ -283,8 +320,9 @@ as stalled training.}
 \section{Limitations}
 
 \begin{itemize}\itemsep2pt
-\item \textbf{No end-to-end accuracy claim.} See Sec.~\ref{sec:floor}. Settling
-      it needs multiple seeds per arm, which one GPU cannot supply.
+\item \textbf{No end-to-end accuracy claim.} The sweep confirms this
+      empirically: all five arms sit within 2.5 points, every $p\ge0.21$.
+      Settling it needs multiple seeds per arm, which one GPU cannot supply.
 \item \textbf{48 batches was not enough} for the gradient measurement --- every
       interval crossed zero. The reported result needed 200. Effect sizes should
       not be read off short runs here.
@@ -309,6 +347,7 @@ python main.py compare
 \end{verbatim}
 
 \todo{repo link}
+\todo{single seed per arm; a second seed would at least bound the run-to-run term}
 
 \begin{thebibliography}{9}\small
 \bibitem{shao2024deepseekmath} Z. Shao et al.

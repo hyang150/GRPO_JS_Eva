@@ -236,6 +236,48 @@ The historical `js_fixed` versus `global` comparison also needs remeasurement.
 * End-to-end training accuracy is not measured. At this scale it cannot be:
   the same prompt scored 28.3% and 18.3% on two 60-problem evals.
 
+## Training sweep
+
+```bash
+python main.py sweep --baselines vanilla js_fixed js_pooled js_loo global --steps 150
+python main.py compare
+```
+
+Five arms from the same seed, so every arm walks the same prompt stream
+(verified: identical reward and degenerate-group fractions at step 0), and
+every eval scores the same 200 problems in the same order.
+
+| arm | eval@0 | eval@final | Δ | p | shrink | collapsed |
+|---|---|---|---|---|---|---|
+| `vanilla` | 42.5% | 45.5% | +3.0 | 0.24 | 1.000 | 0/150 |
+| `js_pooled` | 42.5% | 45.0% | +2.5 | 0.27 | 0.850 | 1/150 |
+| `js_loo` | 42.5% | 45.5% | +3.0 | 0.21 | 0.818 | 0/150 |
+| `js_fixed` | 42.5% | 47.0% | +4.5 | 0.11 | 0.202 | 64/150 |
+| `global` | 42.5% | 47.5% | +5.0 | 0.06 | 0.025 | 133/150 |
+
+**Nothing here is significant, in either direction.** No arm beats its own
+starting point at p<0.05, and none differs from `vanilla` (all p ≥ 0.54). The
+spread across five arms is 2.5 points — below the 3.0-point floor a single arm
+shows against *itself*. **The sweep does not show that shrinkage helps
+training, and it was not capable of showing it.**
+
+Note the trap: `global` has the largest nominal gain. Read without the p
+column that says "discard the group structure and GRPO improves".
+
+What the sweep *does* establish is structural — the shrinkage column separates
+into three tiers accuracy cannot resolve:
+
+```
+vanilla 1.000  ≫  js_pooled 0.850, js_loo 0.818  ≫  js_fixed 0.202  ≫  global 0.025
+```
+
+The corrected variants keep 82–85% of the group structure; the specified one
+keeps 20% and discards it outright on 43% of steps. That `js_pooled` and
+`js_loo` — derived independently — land within 0.03 of each other is mutual
+corroboration.
+
+![Figure 3](results/fig3_training.png)
+
 ## Conformance with GRPO.md
 
 `tests/test_spec_conformance.py` transcribes section 3.2's ten steps literally
@@ -280,4 +322,5 @@ above stated as assertions, plus CPU random-projection regression checks.
 - [x] Phase 0 — GPU env: torch 2.13.0+cu129, sm_120 gate passed, 14.5 GiB VRAM free
 - [x] Phase 2 — GRPO loop, Qwen2.5-0.5B-Instruct + GSM8K rule-based reward
 - [ ] Phase 3 — projection bug corrected; gradient-noise results require remeasurement
-- [ ] Phase 4 — verl PR
+- [x] Phase 4 — 5-arm training sweep, 150 steps each, paired by seed
+- [ ] Phase 5 — verl PR

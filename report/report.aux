@@ -40,14 +40,18 @@
 \newlabel{sec:floor}{{6}{4}{Why not end-to-end accuracy}{section.6}{}}
 \@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Same arm, same seed, same configuration. \texttt  {eval@0} matches exactly because greedy decoding is deterministic, so the divergence is entirely in training: \texttt  {torch.manual\_seed} does not make sampled generation reproducible on GPU.\relax }}{4}{table.caption.8}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {7}Training runs}{4}{section.7}\protected@file@percent }
-\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces \leavevmode {\color  {red}[\,fill from \texttt  {python main.py compare} once the sweep finishes\,]}. Accuracy differences here are smaller than the $3.0$-point noise floor and are reported for completeness, not as evidence.\relax }}{4}{table.caption.9}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces $p$ is a paired McNemar of each arm's final checkpoint against its own \texttt  {eval@0}. $\mathrm  {shrink}$ is the mean over the last 30 steps; ``collapsed'' counts steps with $\mathrm  {shrink}<0.01$.\relax }}{4}{table.caption.9}\protected@file@percent }
+\providecommand*\caption@xref[2]{\@setref\relax\@undefined{#1}}
+\newlabel{tab:sweep}{{5}{4}{$p$ is a paired McNemar of each arm's final checkpoint against its own \texttt {eval@0}. $\shrink $ is the mean over the last 30 steps; ``collapsed'' counts steps with $\shrink <0.01$.\relax }{table.caption.9}{}}
+\@writefile{toc}{\contentsline {paragraph}{Nothing here is significant, in either direction.}{4}{section*.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{What the sweep does establish is structural.}{5}{section*.11}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces All five arms. Reward and degenerate-group panels overlap almost exactly; the shrinkage panel separates into three tiers. Faint lines are per-step values, bold is a rolling window --- median for the gradient norm, which is spiky enough that a rolling mean manufactures flat plateaus that read as stalled training.\relax }}{5}{figure.caption.12}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {8}Limitations}{5}{section.8}\protected@file@percent }
 \bibcite{shao2024deepseekmath}{1}
 \bibcite{zeng2025shrinking}{2}
 \bibcite{han2026ebpo}{3}
 \bibcite{james1961}{4}
-\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces \leavevmode {\color  {red}[\,regenerate once all five arms are present\,]}. Faint lines are per-step values; bold is a rolling window --- median for the gradient norm, which is spiky enough that a rolling mean manufactures flat plateaus that read as stalled training.\relax }}{5}{figure.caption.10}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {8}Limitations}{5}{section.8}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {9}Reproduction}{5}{section.9}\protected@file@percent }
 \bibcite{efron1977}{5}
 \bibcite{liu2025drgrpo}{6}
+\@writefile{toc}{\contentsline {section}{\numberline {9}Reproduction}{6}{section.9}\protected@file@percent }
 \gdef \@abspage@last{6}
