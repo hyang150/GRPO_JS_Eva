@@ -15,7 +15,9 @@ results/train_*.jsonl
 # ~1 GB per arm
 checkpoints/
 
-# Chrome traces from experiments/profile_runtime.py: 100-150 MB each, over
-# GitHub's file limit, and regenerable. The summary.json and operators.txt
-# beside them are the readable output and are kept.
+# Chrome traces from experiments/profile_runtime.py run 100-150 MB raw, over
+# GitHub's 100 MB file limit. They gzip to ~6% (7.0 and 9.5 MB), and Perfetto
+# and chrome://tracing both open .gz directly -- so commit the compressed form
+# and ignore the raw one:
+#     gzip -6 results/runtime_profile_*/*.trace.json
 results/runtime_profile_*/*.trace.json
