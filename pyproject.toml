@@ -1,0 +1,35 @@
+[project]
+name = "grpo-eva"
+version = "0.1.0"
+description = "Shrinkage baselines for GRPO on GSM8K"
+requires-python = ">=3.12,<3.13"   # 3.14 works for torch but is bleeding edge for trl/transformers
+dependencies = [
+    # cu129: the RTX 5080 is sm_120; anything built for cu124 or older
+    # has no kernel image for this device and fails at the first matmul.
+    "torch>=2.13.0",
+    "transformers>=5.16.0",
+    "trl>=1.12.0",
+    "datasets>=5.0.0",
+    "accelerate>=1.14.0",
+    "math-verify>=0.9.0",
+    "matplotlib>=3.8",
+    "pytest>=8.0",
+]
+
+[project.scripts]
+grpo-eva = "grpo_eva.cli:main"
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu129" }
+
+[[tool.uv.index]]
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
+explicit = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/grpo_eva"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

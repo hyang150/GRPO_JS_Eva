@@ -1,0 +1,13 @@
+# uv-managed environment: 7.3 GB, rebuilt with `uv sync`
+.venv/
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+
+# local tool settings, not project config
+.claude/
+
+# training logs are regenerated; figures and their source data are committed
+results/train_*.jsonl

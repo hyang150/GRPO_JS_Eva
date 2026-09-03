@@ -1,0 +1,262 @@
+#!/usr/bin/env python3
+"""grpo-eva -- shrinkage baselines for GRPO on GSM8K.
+
+    python main.py smoke                                  # GPU gate
+    python main.py synthetic --n 2 4 8 16                 # phase 1
+    python main.py train --baseline js_pooled --steps 200 # phase 2
+    python main.py gradvar --batches 200                  # phase 3
+    python main.py eval --n-problems 200
+    python main.py sweep --baselines vanilla js_fixed js_pooled global
+    python main.py figures
+
+`train` and `sweep` accept the full GRPO knob set: --beta (KL to a frozen
+reference), --num-iterations (mu), --scale (advantage std normalisation),
+--epsilon (PPO clip), --loss-norm.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import pathlib
+import random
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "src"))
+
+ROOT = pathlib.Path(__file__).resolve().parent
+DEFAULT_MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
+
+
+# --------------------------------------------------------------------- shared
+def add_model_args(p):
+    p.add_argument("--model", default=DEFAULT_MODEL)
+    p.add_argument("--seed", type=int, default=0)
+
+
+def add_grpo_args(p):
+    from grpo_eva.baselines import BASELINE_REGISTRY
+    p.add_argument("--baseline", default="vanilla", choices=sorted(BASELINE_REGISTRY))
+    p.add_argument("--k", type=int, default=8, help="prompts per step")
+    p.add_argument("--n", type=int, default=8, help="generations per prompt")
+    p.add_argument("--lr", type=float, default=1e-6)
+    p.add_argument("--beta", type=float, default=0.0,
+                   help="KL coefficient; >0 loads a frozen reference model")
+    p.add_argument("--num-iterations", type=int, default=1, help="mu")
+    p.add_argument("--epsilon", type=float, default=0.2, help="PPO clip")
+    p.add_argument("--scale", default="none", choices=["none", "group", "batch"])
+    p.add_argument("--loss-norm", default="constant",
+                   choices=["constant", "per_seq", "per_token"])
+    p.add_argument("--max-new-tokens", type=int, default=512)
+    p.add_argument("--micro-batch", type=int, default=8)
+    p.add_argument("--temperature", type=float, default=1.0)
+
+
+def build(args, need_ref: bool = False):
+    """Loads tokenizer, policy and (optionally) a frozen reference."""
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    torch.manual_seed(args.seed)
+    random.seed(args.seed)
+    tok = AutoTokenizer.from_pretrained(args.model)
+    if tok.pad_token_id is None:
+        tok.pad_token = tok.eos_token
+
+    def load():
+        return AutoModelForCausalLM.from_pretrained(
+            args.model, dtype=torch.bfloat16, attn_implementation="sdpa").cuda()
+
+    model = load()
+    model.gradient_checkpointing_enable()
+    ref = load() if need_ref else None
+    return tok, model, ref
+
+
+# ---------------------------------------------------------------- subcommands
+def cmd_smoke(args):
+    return subprocess.call([sys.executable, str(ROOT / "experiments/smoke_gpu.py")])
+
+
+def cmd_synthetic(args):
+    cmd = [sys.executable, str(ROOT / "experiments/synthetic_mse.py"),
+           "--k", *map(str, args.k), "--n", *map(str, args.n),
+           "--trials", str(args.trials)]
+    rc = subprocess.call(cmd)
+    return rc or subprocess.call([sys.executable, str(ROOT / "experiments/plot_synthetic.py")])
+
+
+def cmd_gradvar(args):
+    return subprocess.call([sys.executable, str(ROOT / "experiments/grad_variance.py"),
+                            "--batches", str(args.batches), "--k", str(args.k),
+                            "--n", str(args.n), "--seed", str(args.seed),
+                            "--model", args.model])
+
+
+def cmd_prompt(args):
+    return subprocess.call([sys.executable, str(ROOT / "experiments/select_prompt.py"),
+                            "--n-problems", str(args.n_problems), "--model", args.model])
+
+
+def cmd_figures(args):
+    rc = 0
+    for script, need in (("plot_synthetic.py", "results/synthetic_mse.json"),
+                         ("plot_grad_variance.py", "results/grad_variance_k8n8_long.json")):
+        if (ROOT / need).exists():
+            rc |= subprocess.call([sys.executable, str(ROOT / "experiments" / script)])
+        else:
+            print(f"skip {script}: {need} not found")
+    return rc
+
+
+def cmd_eval(args):
+    from grpo_eva.evaluate import evaluate
+    tok, model, _ = build(args)
+    r = evaluate(model, tok, n_problems=args.n_problems,
+                 max_new_tokens=args.max_new_tokens,
+                 temperature=args.temperature, progress=True)
+    print(f"\naccuracy {r['accuracy']:.1%} +/- {r['stderr']:.1%}  (n={r['n']}, "
+          f"T={r['temperature']})\nmean_len {r['mean_len']:.0f}  "
+          f"truncated {r['truncated_frac']:.1%}  format {r['format_frac']:.1%}")
+    return 0
+
+
+def _train_one(args, tok, model, ref, tag):
+    """One training run; returns the path of its jsonl log."""
+    from grpo_eva.data import load_gsm8k
+    from grpo_eva.evaluate import evaluate
+    from grpo_eva.grpo import GRPO, GRPOConfig
+
+    cfg = GRPOConfig(baseline=args.baseline, k_prompts=args.k, n_generations=args.n,
+                     lr=args.lr, beta=args.beta, num_iterations=args.num_iterations,
+                     epsilon=args.epsilon, scale=args.scale, loss_norm=args.loss_norm,
+                     max_new_tokens=args.max_new_tokens, temperature=args.temperature,
+                     micro_batch=args.micro_batch, gen_micro_batch=args.k * args.n,
+                     seed=args.seed)
+    trainer = GRPO(model, tok, cfg, ref_model=ref)
+    data = load_gsm8k(tok, "train")
+    rng = random.Random(args.seed)
+
+    out = ROOT / f"results/train_{tag}.jsonl"
+    out.parent.mkdir(exist_ok=True)
+    t0 = time.time()
+    print(f"\n=== {tag} === baseline={args.baseline} K={args.k} N={args.n} "
+          f"beta={args.beta} mu={args.num_iterations} scale={args.scale}", flush=True)
+
+    with out.open("w") as f:
+        conf = {k: v for k, v in vars(args).items()
+                if isinstance(v, (str, int, float, bool, list, type(None)))}
+        f.write(json.dumps({"record": "config", **conf, "tag": tag}) + "\n")
+        for step in range(args.steps):
+            if args.eval_every and step % args.eval_every == 0:
+                e = evaluate(model, tok, n_problems=args.eval_problems,
+                             max_new_tokens=args.max_new_tokens, temperature=0.0)
+                f.write(json.dumps({"record": "eval", "step": step, **e}) + "\n")
+                print(f"       eval@{step}: {e['accuracy']:.1%} +/- {e['stderr']:.1%}",
+                      flush=True)
+
+            m = trainer.step(rng.sample(data, args.k))
+            m.update(record="step", step=step)
+            f.write(json.dumps(m) + "\n")
+            f.flush()
+            if step % args.log_every == 0:
+                print(f"[{step:4d}] acc={m['accuracy']:.3f} deg={m['degenerate_frac']:.2f} "
+                      f"shrink={m['shrink']:.3f} advvar={m['adv_var']:.4f} "
+                      f"gnorm={m['grad_norm']:6.3f} kl={m['kl']:.4f} "
+                      f"clip={m['clip_frac']:.3f} {m['sec_total']:.0f}s", flush=True)
+
+        e = evaluate(model, tok, n_problems=args.eval_problems,
+                     max_new_tokens=args.max_new_tokens, temperature=0.0)
+        f.write(json.dumps({"record": "eval", "step": args.steps, **e}) + "\n")
+        print(f"       eval@final: {e['accuracy']:.1%} +/- {e['stderr']:.1%}")
+
+    print(f"{tag} done in {(time.time() - t0) / 60:.1f} min -> {out}")
+    return out
+
+
+def cmd_train(args):
+    tok, model, ref = build(args, need_ref=args.beta > 0)
+    tag = args.tag or f"{args.baseline}_k{args.k}n{args.n}_s{args.seed}"
+    _train_one(args, tok, model, ref, tag)
+    return 0
+
+
+def cmd_sweep(args):
+    """Same seed, same prompts, one arm per baseline -- a paired A/B."""
+    import copy
+    for b in args.baselines:
+        a = copy.copy(args)
+        a.baseline = b
+        # fresh policy per arm; identical seed means identical prompt stream
+        tok, model, ref = build(a, need_ref=a.beta > 0)
+        _train_one(a, tok, model, ref, f"{b}_k{a.k}n{a.n}_s{a.seed}")
+        del model, ref
+        import torch, gc
+        gc.collect()
+        torch.cuda.empty_cache()
+    return 0
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="grpo-eva", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("smoke", help="check the GPU can run bf16 on this arch")
+    p.set_defaults(fn=cmd_smoke)
+
+    p = sub.add_parser("synthetic", help="phase 1: MSE of each baseline, ground truth known")
+    p.add_argument("--k", type=int, nargs="+", default=[32])
+    p.add_argument("--n", type=int, nargs="+", default=[2, 4, 8, 16])
+    p.add_argument("--trials", type=int, default=2000)
+    p.set_defaults(fn=cmd_synthetic)
+
+    p = sub.add_parser("train", help="phase 2: GRPO on GSM8K")
+    add_model_args(p); add_grpo_args(p)
+    p.add_argument("--steps", type=int, default=200)
+    p.add_argument("--eval-every", type=int, default=50, help="0 disables mid-run eval")
+    p.add_argument("--eval-problems", type=int, default=200)
+    p.add_argument("--log-every", type=int, default=1)
+    p.add_argument("--tag", default=None)
+    p.set_defaults(fn=cmd_train)
+
+    p = sub.add_parser("sweep", help="one training run per baseline, paired by seed")
+    add_model_args(p); add_grpo_args(p)
+    p.add_argument("--baselines", nargs="+",
+                   default=["vanilla", "js_fixed", "js_pooled", "global"])
+    p.add_argument("--steps", type=int, default=150)
+    p.add_argument("--eval-every", type=int, default=50)
+    p.add_argument("--eval-problems", type=int, default=200)
+    p.add_argument("--log-every", type=int, default=5)
+    p.set_defaults(fn=cmd_sweep, tag=None)
+
+    p = sub.add_parser("gradvar", help="phase 3: paired gradient-noise measurement")
+    add_model_args(p)
+    p.add_argument("--batches", type=int, default=200)
+    p.add_argument("--k", type=int, default=8)
+    p.add_argument("--n", type=int, default=8)
+    p.set_defaults(fn=cmd_gradvar)
+
+    p = sub.add_parser("eval", help="pass@1 on the GSM8K test split")
+    add_model_args(p)
+    p.add_argument("--n-problems", type=int, default=200)
+    p.add_argument("--max-new-tokens", type=int, default=512)
+    p.add_argument("--temperature", type=float, default=0.0)
+    p.set_defaults(fn=cmd_eval)
+
+    p = sub.add_parser("prompt", help="compare candidate system prompts")
+    add_model_args(p)
+    p.add_argument("--n-problems", type=int, default=60)
+    p.set_defaults(fn=cmd_prompt)
+
+    p = sub.add_parser("figures", help="regenerate every figure from saved results")
+    p.set_defaults(fn=cmd_figures)
+
+    args = ap.parse_args()
+    sys.exit(args.fn(args))
+
+
+if __name__ == "__main__":
+    main()
