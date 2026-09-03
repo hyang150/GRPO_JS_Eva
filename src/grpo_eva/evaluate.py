@@ -64,4 +64,30 @@ def evaluate(model, tokenizer, n_problems: int = 200, batch_size: int = 32,
         # recovering it from the last number in the text
         "format_frac": sum(("\\boxed{" in t) or ("####" in t) for t in texts) / n,
         "temperature": temperature,
+        # Every eval scores the *same* problems in the same order, so two
+        # checkpoints can be compared with a paired test (McNemar) rather than
+        # by overlapping binomial intervals -- much more power at this n.
+        "per_problem": [int(x) for x in rew],
     }
+
+
+def mcnemar(before: list[int], after: list[int]) -> dict:
+    """Paired comparison of two evals over the same problems.
+
+    Only the disagreements carry information: b = fixed, c = broken.  Uses the
+    exact binomial two-sided test, which is what you want at these counts.
+    """
+    from math import comb
+
+    if len(before) != len(after):
+        raise ValueError("evals must cover the same problems")
+    b = sum(x == 0 and y == 1 for x, y in zip(before, after))   # newly correct
+    c = sum(x == 1 and y == 0 for x, y in zip(before, after))   # newly wrong
+    n = b + c
+    if n == 0:
+        return {"fixed": 0, "broken": 0, "p_value": 1.0, "delta": 0.0}
+    k = min(b, c)
+    tail = sum(comb(n, i) for i in range(k + 1)) / 2 ** n
+    return {"fixed": b, "broken": c, "n_discordant": n,
+            "p_value": min(1.0, 2 * tail),
+            "delta": (b - c) / len(before)}

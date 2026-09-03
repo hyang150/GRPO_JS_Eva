@@ -11,3 +11,6 @@ __pycache__/
 
 # training logs are regenerated; figures and their source data are committed
 results/train_*.jsonl
+
+# ~1 GB per arm
+checkpoints/

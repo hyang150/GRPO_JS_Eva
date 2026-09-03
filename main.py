@@ -103,7 +103,8 @@ def cmd_prompt(args):
 def cmd_figures(args):
     rc = 0
     for script, need in (("plot_synthetic.py", "results/synthetic_mse.json"),
-                         ("plot_grad_variance.py", "results/grad_variance_k8n8_long.json")):
+                         ("plot_grad_variance.py", "results/grad_variance_k8n8_long.json"),
+                         ("plot_training.py", "results")):
         if (ROOT / need).exists():
             rc |= subprocess.call([sys.executable, str(ROOT / "experiments" / script)])
         else:
@@ -172,6 +173,11 @@ def _train_one(args, tok, model, ref, tag):
         f.write(json.dumps({"record": "eval", "step": args.steps, **e}) + "\n")
         print(f"       eval@final: {e['accuracy']:.1%} +/- {e['stderr']:.1%}")
 
+    if args.save_checkpoint:
+        d = ROOT / "checkpoints" / tag
+        model.save_pretrained(d); tok.save_pretrained(d)
+        print(f"       checkpoint -> {d}")
+
     print(f"{tag} done in {(time.time() - t0) / 60:.1f} min -> {out}")
     return out
 
@@ -220,6 +226,8 @@ def main():
     p.add_argument("--eval-problems", type=int, default=200)
     p.add_argument("--log-every", type=int, default=1)
     p.add_argument("--tag", default=None)
+    p.add_argument("--save-checkpoint", action="store_true",
+                   help="write the final policy so it can be re-evaluated later")
     p.set_defaults(fn=cmd_train)
 
     p = sub.add_parser("sweep", help="one training run per baseline, paired by seed")
@@ -230,6 +238,8 @@ def main():
     p.add_argument("--eval-every", type=int, default=50)
     p.add_argument("--eval-problems", type=int, default=200)
     p.add_argument("--log-every", type=int, default=5)
+    p.add_argument("--save-checkpoint", action="store_true",
+                   help="write the final policy so it can be re-evaluated later")
     p.set_defaults(fn=cmd_sweep, tag=None)
 
     p = sub.add_parser("gradvar", help="phase 3: paired gradient-noise measurement")
