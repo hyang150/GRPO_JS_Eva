@@ -29,8 +29,12 @@ def main():
     rows = sorted(rows, key=lambda r: r["N"])
     ns = [r["N"] for r in rows]
 
-    fig, axes = plt.subplots(1, 3, figsize=(14.5, 4.6), facecolor=SURFACE)
-    fig.subplots_adjust(left=0.055, right=0.985, top=0.80, bottom=0.20, wspace=0.26)
+    ksweep = ROOT / "results/synthetic_k_sweep.json"
+    krows = sorted(json.loads(ksweep.read_text()), key=lambda r: r["K"]) if ksweep.exists() else []
+
+    n_panels = 4 if krows else 3
+    fig, axes = plt.subplots(1, n_panels, figsize=(4.8 * n_panels, 4.6), facecolor=SURFACE)
+    fig.subplots_adjust(left=0.05, right=0.988, top=0.80, bottom=0.20, wspace=0.28)
 
     for ax in axes:
         ax.set_facecolor(SURFACE)
@@ -114,6 +118,32 @@ def main():
     ax.set_title("C.  Why  —  how hard each variant shrinks", color=INK,
                  fontsize=11.5, fontweight="bold", loc="left", pad=8)
 
+    # -- D: the collapse is monotone in K, and lands exactly on global ------
+    if krows:
+        ax = axes[3]
+        ks = [r["K"] for r in krows]
+        for key in ("js_pooled", "js_loo", "js_fixed", "global"):
+            if key not in krows[0]:
+                continue
+            c, ls, _ = SERIES[key]
+            ax.plot(ks, [r[key]["shrink"] for r in krows], ls, color=c, lw=2,
+                    marker="o", ms=5.5, mec=SURFACE, mew=1.2, zorder=3)
+        ax.set_xscale("log", base=2)
+        ax.set_xticks(ks); ax.set_xticklabels(ks)
+        ax.set_ylim(-0.06, 1.06)
+        ax.set_xlabel("prompts per batch  $K$   (at $N{=}8$)", color=INK2, fontsize=10)
+        ax.set_ylabel("implied shrinkage factor", color=INK2, fontsize=10)
+        ax.set_title("D.  The collapse deepens with $K$", color=INK, fontsize=11.5,
+                     fontweight="bold", loc="left", pad=8)
+        j = krows[-1]["js_fixed"]["shrink"]
+        ax.annotate("$V{=}1/N$ meets the global mean\nand stays there",
+                    xy=(ks[-1], j), xytext=(-8, 46), textcoords="offset points",
+                    ha="right", color="#a87400", fontsize=8.5, fontweight="bold",
+                    arrowprops=dict(arrowstyle="->", color="#a87400", lw=1.0))
+        ax.annotate("more prompts should help,\nnot hurt", xy=(0.5, 0.5),
+                    xycoords="axes fraction", ha="center", color=INK2,
+                    fontsize=8.5, style="italic")
+
     handles = [plt.Line2D([], [], color=c, ls=ls, lw=2, marker="o", ms=5.5,
                           mec=SURFACE, mew=1.2, label=lab)
                for c, ls, lab in SERIES.values()]
@@ -122,9 +152,10 @@ def main():
                handlelength=2.2, labelcolor=INK2)
 
     k = rows[0]["K"]
-    fig.suptitle(f"Shrinkage baselines for GRPO — Bernoulli rewards, K={k} prompts, "
-                 "2000 trials, $p_k\\sim$Beta(1.2, 2.2)",
-                 color=INK, fontsize=12.5, fontweight="bold", x=0.055, ha="left", y=0.955)
+    fig.suptitle("Shrinkage baselines for GRPO — Bernoulli rewards, "
+                 f"$p_k\\sim$Beta(1.2, 2.2).   A–C: $K$={k}, sweeping $N$."
+                 + ("   D: $N$=8, sweeping $K$." if krows else ""),
+                 color=INK, fontsize=12.5, fontweight="bold", x=0.05, ha="left", y=0.955)
 
     out = ROOT / "results/fig1_synthetic_mse.png"
     fig.savefig(out, dpi=200, facecolor=SURFACE)
