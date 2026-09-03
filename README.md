@@ -26,6 +26,30 @@ implementation.
    Degenerate groups have std 0 *and*, under shrinkage, a non-zero advantage by
    design — so the usual `std + 1e-4` multiplies it by 1e4.
 
+### The measurement floor
+
+Two runs of the **same arm, same seed, same config** diverge by **3.0
+points** of test accuracy:
+
+| | run A | run B |
+|---|---|---|
+| eval@0 | 42.5% | 42.5% |
+| eval@50 | 44.5% | 43.5% |
+| eval@100 | 44.5% | 44.5% |
+| eval@final | **48.5%** | **45.5%** |
+
+`eval@0` is identical because greedy decoding is deterministic, so the
+divergence is entirely in training. `torch.manual_seed` does not make
+sampled generation reproducible on GPU — kernel selection and reduction
+order are not fixed.
+
+The effect this project is trying to detect is **0.6–1.0 points** (the
+accuracy gain arXiv:2511.03710 reports on this exact setting). **The noise
+floor is 3–5x the effect.** End-to-end accuracy cannot resolve it on one
+GPU, which is why the headline measurement here is gradient noise on paired
+rollouts instead — same batch, every baseline, so the rollout randomness
+cancels by construction.
+
 ### Where to look
 
 | | |
