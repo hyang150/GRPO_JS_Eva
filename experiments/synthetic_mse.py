@@ -49,7 +49,9 @@ def run(k, n, trials, alpha, beta, seed, device="cpu"):
             "mse_stderr": (se.std() / trials ** 0.5).item(),
             "bias2": (err.mean(dim=0) ** 2).mean().item(),
             "g2": ((r - b) ** 2).mean().item(),
-            "shrink": shrink.mean().item(),
+            # a trial in which every group mean coincides with the grand mean
+            # has no defined shrinkage; average over the trials that do
+            "shrink": shrink.nanmean().item(),
         }
 
     # how often does a group carry no GRPO signal at all?

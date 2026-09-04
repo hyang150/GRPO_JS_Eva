@@ -372,6 +372,9 @@ def main():
     p = sub.add_parser("report", help="compile report/report.tex to PDF")
     p.set_defaults(fn=lambda a: subprocess.call(
         ["latexmk", "-pdf", "-interaction=nonstopmode", "-halt-on-error", "report.tex"],
+        cwd=ROOT / "report") or subprocess.call(
+        # the Chinese version needs xeCJK, hence xelatex
+        ["latexmk", "-xelatex", "-interaction=nonstopmode", "-halt-on-error", "report_zh.tex"],
         cwd=ROOT / "report"))
 
     p = sub.add_parser("compare", help="paired McNemar across sweep arms")
