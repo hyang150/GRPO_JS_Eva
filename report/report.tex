@@ -50,10 +50,15 @@ have (Sec.~\ref{sec:corrections}); it is withdrawn pending remeasurement.
 specification's optional ``divide by the within-group standard deviation'' is
 unsafe in combination with shrinkage, inflating advantages by $10^4$.
 
-I also report a measurement I think matters more than any of the above: two
-runs of the \emph{same} configuration at the \emph{same} seed end $3.0$
-accuracy points apart. The effect under test is $0.65$--$1.5$ points. This is
-why the headline measurement here is gradient noise on paired rollouts rather
+I also report a measurement I think matters more than any of the above. With
+the corrected sampler, three seeds and both group shapes at $K\cdot N=64$, no
+baseline differs from GRPO in final accuracy by more than its own seed-to-seed
+spread; the one row that reaches $p<0.01$ (\texttt{js\_fixed} at $N=2$,
+$-3.0\pm0.3$) is algebraically the \emph{same algorithm} as the
+\texttt{global} arm that sits at $-0.2\pm1.6$, and the two arms' three
+same-seed runs end $0.5$, $6.5$ and $1.5$ points apart. That is the
+run-to-run term; the effect under test is $0.65$--$1.5$ points. This is why
+the headline measurement here is gradient noise on paired rollouts rather
 than end-to-end accuracy.
 \end{abstract}
 
@@ -382,16 +387,125 @@ in training: \texttt{torch.manual\_seed} does not make sampled generation
 reproducible on GPU.}
 \end{table}
 
-The noise floor is $3.0$ points. The effect reported for this setting is
-$0.65$--$1.5$ points (Table~2 of \cite{zeng2025shrinking}: JS minus GRPO at
-$N=8/4/2$, $K=64$, 500 steps, five seeds) --- two to five times smaller, and
-this report runs $K=8$ for 150 steps.
-End-to-end accuracy cannot resolve it on one GPU, and any single-seed accuracy
-comparison at this scale, in either direction, is an artefact.
+That pair ran under the 1.1 sampler. The corrected sweep of
+Sec.~\ref{sec:phase4b} contains a cleaner version of the same experiment, by
+accident of algebra. At $K=32$, $N=2$ the specified estimator's shrinkage
+term is $c/S$ with $c=(K-3)/N=14.5$, while $S=\sum_k(\bar x_k-\bar x)^2$
+over group means in $\{0,\tfrac12,1\}$ cannot exceed $K/4=8$. The
+positive-part clamp fires on every batch, so \texttt{js\_fixed} computes
+exactly the \texttt{global} baseline: its logged shrinkage is $0$ on all
+150 steps of all three seeds, and its step-1 record (reward, gradient norm,
+completion length) agrees with \texttt{global}'s to the bit before the two
+processes diverge at step~2.
 
-\section{Training runs}
+\begin{table}[h]\centering\small
+\begin{tabular}{lrrr}
+\toprule
+seed & \texttt{global} & \texttt{js\_fixed} & difference \\
+\midrule
+0 & 44.0\% & 43.5\% & $+0.5$ \\
+1 & 48.5\% & 42.0\% & $+6.5$ \\
+2 & 43.0\% & 41.5\% & $+1.5$ \\
+\bottomrule
+\end{tabular}
+\caption{Final test accuracy of the same algorithm run twice per seed
+($K=32$, $N=2$, 1.0 sampler). The spread is the run-to-run term of this
+protocol.}
+\label{tab:twins}
+\end{table}
 
-Five arms, 150 steps each, identical seed so every arm walks the same prompt
+The noise floor is therefore $0.5$--$6.5$ points on 200 test problems. The
+effect reported for this setting is $0.65$--$1.5$ points (Table~2 of
+\cite{zeng2025shrinking}: JS minus GRPO at $N=8/4/2$, $K=64$, 500 steps,
+five seeds). End-to-end accuracy cannot resolve it at this scale, and any
+single-seed accuracy comparison here, in either direction, is an artefact.
+
+\section{Training runs, corrected sampler, three seeds}
+\label{sec:phase4b}
+
+Four arms at each of two group shapes with $K\cdot N=64$, seeds 0--2, 150
+steps, run 2026-09-04 with the corrected sampler and mask
+(\texttt{repetition\_penalty} recorded as 1.0 in every config line). Every
+arm of a seed walks the same prompt stream, and every run starts from the
+same checkpoint, so \texttt{eval@0} is 45.0\% for all 24 runs (42.5\%
+under the 1.1 sampler, which also penalised the greedy eval).
+
+\begin{table}[h]\centering\small
+\begin{tabular}{llrrrrrr}
+\toprule
+$K{\times}N$ & arm & final, per seed & mean $\pm$ sem & vs \texttt{vanilla} & $p$ & $\shrink$ & collapsed \\
+\midrule
+$8{\times}8$  & \texttt{vanilla}    & 44.5 / 42.0 / 47.5 & $44.7\pm1.6$ & & & 1.000 & 0 \\
+$8{\times}8$  & \texttt{js\_pooled} & 44.0 / 45.5 / 47.0 & $45.5\pm0.9$ & $+0.8\pm1.3$ & 0.60 & 0.85 & 0--1 \\
+$8{\times}8$  & \texttt{js\_fixed}  & 44.0 / 47.5 / 46.0 & $45.8\pm1.0$ & $+1.2\pm2.2$ & 0.65 & 0.21 & 38--44 \\
+$8{\times}8$  & \texttt{global}     & 48.5 / 44.0 / 45.0 & $45.8\pm1.4$ & $+1.2\pm1.9$ & 0.61 & 0.000 & 150 \\
+\midrule
+$32{\times}2$ & \texttt{vanilla}    & 46.0 / 45.5 / 44.5 & $45.3\pm0.4$ & & & 1.000 & 0 \\
+$32{\times}2$ & \texttt{js\_pooled} & 41.0 / 46.0 / 47.5 & $44.8\pm2.0$ & $-0.5\pm2.4$ & 0.85 & 0.56 & 0--1 \\
+$32{\times}2$ & \texttt{js\_fixed}  & 43.5 / 42.0 / 41.5 & $42.3\pm0.6$ & $-3.0\pm0.3$ & 0.009 & 0.000 & 150 \\
+$32{\times}2$ & \texttt{global}     & 44.0 / 48.5 / 43.0 & $45.2\pm1.7$ & $-0.2\pm1.6$ & 0.93 & 0.000 & 150 \\
+\bottomrule
+\end{tabular}
+\caption{Final test accuracy (200 problems, greedy) over seeds 0--2. ``vs
+\texttt{vanilla}'' is the mean $\pm$ sem of the within-seed paired
+difference, $p$ a paired $t$-test with two degrees of freedom. $\shrink$ is
+the run mean of the implied shrinkage factor; ``collapsed'' counts steps at
+exactly~0 out of 150, range over seeds.}
+\label{tab:phase4b}
+\end{table}
+
+\paragraph{At $K=8$, $N=8$ nothing is resolved.} Every arm is within 1.2
+points of \texttt{vanilla}, every sem exceeds the difference, every $p$ is
+about $0.6$. The per-seed columns show why: the same arm moves 3--5 points
+between seeds. Seed~0 alone would have said \texttt{global} beats
+\texttt{vanilla} by 4.0 points (McNemar $p=0.039$, 10 wins / 2 losses);
+seeds 1 and 2 put it at $+2.0$ and $-2.5$.
+
+\paragraph{At $K=32$, $N=2$ the one significant row is the noise floor,
+measured.} \texttt{js\_fixed} at $-3.0\pm0.3$ ($p=0.009$) reads as a
+finding, but Sec.~\ref{sec:floor} shows it is algebraically \texttt{global}
+at this shape, and \texttt{global} sits at $-0.2\pm1.6$. Pooling the two
+arms as the six runs of one algorithm they are gives $-1.6\pm1.0$ against
+\texttt{vanilla}, and the significance is gone. A $t$-test with two degrees
+of freedom on three differences that happen to land within $0.5$ of each
+other produces $p<0.01$ from nothing; the row is kept in the table to show
+the trap.
+
+\paragraph{What the sweep does establish.} Two things. The specification
+verbatim, at the $N=2$ it is motivated by, does not merely over-shrink: it discards
+the group structure on 100\% of steps (25--30\% at $N=8$), which is
+Result~1 observed in training rather than in simulation.
+\texttt{js\_pooled}, the specification with its $\sigma^2\approx1$
+precondition honoured, keeps 56\% of the structure at $N=2$ and 85\% at
+$N=8$ --- the mild shrinkage Stein's result asks for. And the ``more stable
+training'' claim finds no support at this scale: no arm clipped a single
+gradient step under the 1.0 sampler (the clip counts of
+Table~\ref{tab:sweep} were an off-policy artefact), sampled-token entropy
+falls from $0.52$ to $0.26$--$0.33$ for every arm alike, and the per-step
+gradient noise/signal ratio of \cite{zeng2025shrinking} (eq.~17--18,
+logged with \texttt{--track-grad-var}) is 58--182 with 32--45\% of steps
+returning a signal estimate $\le0$: at 8 or 32 prompts per step the
+gradient is essentially all noise for every baseline, and the ratio cannot
+separate them. The comparison script reports those steps as right-censored
+($+\infty$) with their share, rather than dropping them, which would bias
+the median down.
+
+\begin{figure}[h]\centering
+\includegraphics[width=\textwidth]{fig3_training.pdf}\\[4pt]
+\includegraphics[width=\textwidth]{fig3_training_k32n2.pdf}
+\caption{Seed 0 of the corrected sweep at $K{=}8,N{=}8$ (top) and
+$K{=}32,N{=}2$ (bottom). Reward and degenerate-group panels overlap; the
+shrinkage panel separates the arms, and at $N=2$ \texttt{js\_fixed} lies on
+\texttt{global}'s zero line for the whole run. No gradient norm reaches the
+clip threshold. Faint lines are per-step values, bold a rolling window ---
+median for the gradient norm.}
+\end{figure}
+
+\section{Training runs, seed 0, 1.1 sampler (superseded)}
+
+The first sweep, kept for the record; its stability differences (clip
+counts, entropy) are off-policy artefacts that vanish in
+Sec.~\ref{sec:phase4b}. Five arms, 150 steps each, identical seed so every arm walks the same prompt
 stream (verified: identical reward and degenerate-group fractions at step~0).
 Every arm evaluates the same 200 test problems in the same order, so
 checkpoints are compared with McNemar rather than by overlapping binomial
@@ -453,30 +567,26 @@ At $K=8$, \texttt{js\_fixed} is degraded but not identical to \texttt{global}
 ($0.202$ vs $0.025$). Full coincidence needs larger $K$, as Table~2 shows ---
 which is the deployment regime, not this one.
 
-\begin{figure}[h]\centering
-\includegraphics[width=\textwidth]{fig3_training.pdf}
-\caption{All five arms. Reward and degenerate-group panels overlap almost
-exactly; the shrinkage panel separates into three tiers. Faint lines are
-per-step values, bold is a rolling window --- median for the gradient norm,
-which is spiky enough that a rolling mean manufactures flat plateaus that read
-as stalled training.}
-\end{figure}
-
 \section{Limitations}
 
 \begin{itemize}\itemsep2pt
-\item \textbf{No end-to-end accuracy claim.} The sweep confirms this
-      empirically: all five arms sit within 2.5 points, every $p\ge0.21$.
-      Settling it needs multiple seeds per arm, which one GPU cannot supply.
+\item \textbf{No end-to-end accuracy claim.} Three seeds per arm at two
+      group shapes leave every difference inside its own sem
+      (Table~\ref{tab:phase4b}), and the same-algorithm pair of
+      Table~\ref{tab:twins} spans $0.5$--$6.5$ points. Resolving a
+      1-point effect at this run-to-run spread needs on the order of
+      20--40 seeds per arm.
 \item \textbf{48 batches was not enough} for the gradient measurement --- every
       interval crossed zero. The reported result needed 200. Effect sizes should
       not be read off short runs here.
 \item \textbf{\texttt{js\_loo} is verified} against the arXiv PDF (Sec.~3.3,
       eq.~10 and 13--16; the $(n-1)/n$ factor is eq.~15).
-\item \textbf{The specification's own regime is untested on the GPU.} Its
-      motivation is small $N$; every training and gradient run here is
-      $N=8$, $K=8$, and no stability metric (clip events, entropy, reward-curve
-      variance) has been compared across arms.
+\item \textbf{The specification's regime is tested for accuracy and
+      stability, not for gradient noise.} At $N=2$ the per-step
+      noise/signal estimator returns a non-positive signal on 36--46\% of
+      steps for every arm; the paired-rollout measurement of Result~2
+      (200 batches, both estimators) has not yet been rerun with the 1.0
+      sampler.
 \item \textbf{Single model, single task.} Whether the collapse threshold moves
       with reward density is untested.
 \end{itemize}
@@ -488,13 +598,21 @@ uv sync && python main.py smoke        # torch cu129; the RTX 5080 is sm_120
 python -m pytest tests/ -q             # 162 tests
 python main.py synthetic --k 4 8 16 32 64 --n 8
 python main.py gradvar --batches 200
-python main.py sweep --baselines vanilla js_fixed js_pooled js_loo global
-python main.py compare
+python main.py sweep --seeds 0 1 2 --k 32 --n 2 --track-grad-var \
+    --baselines vanilla js_fixed js_pooled global
+python main.py sweep --seeds 0 1 2 --k 8  --n 8 --track-grad-var \
+    --baselines vanilla js_fixed js_pooled global
+python main.py compare --glob 'train_*_k8n8_s*.jsonl'
+python main.py compare --glob 'train_*_k32n2_s*.jsonl'
+python main.py figures
 \end{verbatim}
 
+The 24 per-step logs of Sec.~\ref{sec:phase4b} are committed under
+\texttt{results/train\_*\_k\{8n8,32n2\}\_s\{0,1,2\}.jsonl}; they are not
+reproducible bit-for-bit (Sec.~\ref{sec:floor}), which is why they are kept.
+
 \todo{repo link}
-\todo{single seed per arm; a second seed (in progress) would at least bound the run-to-run term}
-\todo{re-measure everything with the 1.0 sampler before any number above is quoted}
+\todo{rerun the paired-rollout gradient measurement (Result 2) with the 1.0 sampler}
 
 \begin{thebibliography}{9}\small
 \bibitem{shao2024deepseekmath} Z. Shao et al.

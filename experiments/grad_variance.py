@@ -49,6 +49,17 @@ PROBE_SEED = 20260903
 PROBE_SCHEME = "gaussian_stream_v2"
 
 
+def _pct_censored(x, q):
+    """Percentiles of a 1-D sample that may contain +inf (right-censored
+    values).  np.percentile interpolates and returns nan between two infs, so
+    take order statistics instead: no interpolation, inf stays inf."""
+    import numpy as np
+    r = np.sort(np.asarray(x, dtype=float))
+    idx = np.clip(np.round(np.asarray(q, dtype=float) / 100 * (len(r) - 1)).astype(int),
+                  0, len(r) - 1)
+    return r[idx]
+
+
 def project(grads, m: int) -> float:
     """<g, u_m> for a fixed standard-normal probe u_m.
 
@@ -151,7 +162,15 @@ class GradAccumulator:
 
         point = stats(np.arange(n_pairs))
         boot = np.array([stats(rng.integers(0, n_pairs, n_pairs)) for _ in range(n_boot)])
-        lo, hi = np.nanpercentile(boot, [2.5, 97.5], axis=0)
+        # A resample whose signal estimate is <= 0 has an undefined (arbitrarily
+        # large) ratio.  Dropping it would censor the noisiest resamples and pull
+        # the upper bound down, so it enters the percentile as +inf: the upper
+        # bound becomes inf whenever more than 2.5% of resamples are undefined.
+        boot_cens = boot.copy()
+        boot_cens[~np.isfinite(boot_cens[:, 2]), 2] = np.inf
+        lo, hi = np.percentile(boot_cens[:, :2], [2.5, 97.5], axis=0)
+        lo, hi = (np.append(lo, _pct_censored(boot_cens[:, 2], 2.5)),
+                  np.append(hi, _pct_censored(boot_cens[:, 2], 97.5)))
         return {
             "dots": dots.tolist(), "n_pairs": n_pairs,
             "pair_trace_cov": point[0], "pair_trace_cov_ci": [lo[0], hi[0]],
@@ -159,7 +178,9 @@ class GradAccumulator:
             "pair_noise_ratio": point[2], "pair_noise_ratio_ci": [lo[2], hi[2]],
             # resamples where the signal estimate came out <= 0
             "pair_undefined_frac": float(np.mean(~np.isfinite(boot[:, 2]))),
-            "pair_boot": boot.tolist(),
+            # censored copy: undefined ratios are +inf, so the paired
+            # "ratio vs GRPO" below inherits the same right-censoring
+            "pair_boot": boot_cens.tolist(),
         }
 
 
@@ -262,10 +283,14 @@ def main():
         for name in ORDER:
             s = out[name]
             pb = np.asarray(s.pop("pair_boot"))
+            # ratio column is +inf where the signal estimate was <= 0:
+            # arm undefined / GRPO finite -> +inf (right-censored, kept);
+            # arm finite / GRPO undefined -> -100% (kept);
+            # both undefined -> nan, genuinely unordered, dropped and counted
             with np.errstate(invalid="ignore", divide="ignore"):
                 rel = (pb[:, 2] / pbase[:, 2] - 1) * 100
-            ok = np.isfinite(rel)
-            rlo, rhi = (np.percentile(rel[ok], [2.5, 97.5]) if ok.any()
+            ok = ~np.isnan(rel)
+            rlo, rhi = (_pct_censored(rel[ok], [2.5, 97.5]) if ok.any()
                         else (float("nan"), float("nan")))
             pt = (s["pair_noise_ratio"] / out["vanilla"]["pair_noise_ratio"] - 1) * 100
             s["pair_rel_noise_vs_vanilla"] = [float(pt), float(rlo), float(rhi)]

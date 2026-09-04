@@ -61,13 +61,18 @@ def main():
     # one figure = one seed.  Keyed by baseline alone, a second seed's file
     # would silently replace the first's for that arm and the panel would mix
     # prompt streams.
-    by_seed = {}
+    by_seed, shapes = {}, set()
     for p in sorted((ROOT / "results").glob(args.glob)):
         cfg, steps, evals = load(p)
         if steps:
+            shapes.add((cfg.get("k"), cfg.get("n")))
             by_seed.setdefault(cfg.get("seed", 0), {})[cfg.get("baseline", p.stem)] = (cfg, steps, evals)
     if not by_seed:
         sys.exit(f"no runs matched results/{args.glob}")
+    if len(shapes) > 1:
+        # keyed by (seed, baseline): a second group shape would overwrite the first
+        sys.exit(f"results/{args.glob} mixes group shapes (K,N)={sorted(shapes)}; "
+                 f"narrow it, e.g. --glob 'train_*_k8n8_s*.jsonl'")
     seed = min(by_seed) if args.seed is None else args.seed
     if seed not in by_seed:
         sys.exit(f"no runs for seed {seed}; have {sorted(by_seed)}")

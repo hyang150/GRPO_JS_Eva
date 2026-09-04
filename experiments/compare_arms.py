@@ -118,10 +118,12 @@ def main():
     args = ap.parse_args()
 
     by_seed = {}          # {(baseline, seed): (cfg, steps, evals)}
+    shapes = set()
     for p in sorted((ROOT / "results").glob(args.glob)):
         cfg, steps, evals = load(p)
         if not steps:
             continue
+        shapes.add((cfg.get("k"), cfg.get("n")))
         want = cfg.get("steps")
         # a run still in progress has an eval@0 but no final eval; reading
         # evals[-1] as its result would score the untrained policy
@@ -131,6 +133,12 @@ def main():
         by_seed[(cfg.get("baseline", p.stem), cfg.get("seed", 0))] = (cfg, steps, evals)
     if not by_seed:
         sys.exit(f"no runs matched results/{args.glob}")
+
+    if len(shapes) > 1:
+        # runs are keyed on (baseline, seed) only, so two group shapes would
+        # silently overwrite each other above
+        sys.exit(f"results/{args.glob} mixes group shapes (K,N)={sorted(shapes)}; "
+                 f"narrow it, e.g. --glob 'train_*_k8n8_s*.jsonl'")
 
     seeds = sorted({s for _, s in by_seed})
     arms = sorted({a for a, _ in by_seed})
@@ -203,13 +211,18 @@ def stability(runs, reference, seed):
       d reward   per-step reward minus the reference arm's, last 30 steps;
                  same seed -> same prompts, so prompt difficulty cancels
       noise/sig  median per-step gradient noise/signal, arXiv:2511.03710
-                 eq. 17-18 across micro-batches (needs --track-grad-var)
+                 eq. 17-18 across micro-batches (needs --track-grad-var).
+                 The signal estimate ||g_bar||^2 - Var is unbiased but can
+                 come out <= 0 when noise dominates; such steps are logged
+                 as NaN.  Dropping them would censor exactly the noisiest
+                 steps and bias the median down, so they enter as +inf
+                 (right-censored) and their share is printed alongside.
     """
     import statistics as st
 
     print(f"\nstability, seed {seed}")
     print(f"{'arm':<11}{'clipped':>9}{'entropy':>13}{'adv_var':>9}{'reward sd':>11}"
-          f"{'d reward vs ' + reference:>22}{'noise/sig':>11}")
+          f"{'d reward vs ' + reference:>22}{'noise/sig':>17}")
     ref_steps = runs[reference][1]
     for arm, (_, steps, _) in runs.items():
         gn = [s["grad_norm"] for s in steps]
@@ -223,13 +236,18 @@ def stability(runs, reference, seed):
         d = [steps[i]["accuracy"] - ref_steps[i]["accuracy"] for i in range(n)][-30:]
         dm = st.fmean(d) if d else float("nan")
         dse = st.pstdev(d) / len(d) ** 0.5 if len(d) > 1 else float("nan")
-        nsr = [s["grad_noise_ratio"] for s in steps
-               if s.get("grad_noise_ratio") == s.get("grad_noise_ratio") and "grad_noise_ratio" in s]
-        nsr_txt = f"{st.median(nsr):.1f}" if nsr else "n/a"
+        nsr = [s["grad_noise_ratio"] for s in steps if "grad_noise_ratio" in s]
+        if nsr:
+            censored = sum(v != v for v in nsr) / len(nsr)         # NaN: signal <= 0
+            med = st.median(float("inf") if v != v else v for v in nsr)
+            nsr_txt = (f"{med:.1f}" if med != float("inf") else "inf") + f" ({censored:.0%})"
+        else:
+            nsr_txt = "n/a"
         print(f"{arm:<11}{clipped:>9.1%}{ent:>13}{advv:>9.3f}{rsd:>11.3f}"
-              f"{dm:>+14.3f} +-{dse:.3f}{nsr_txt:>11}")
+              f"{dm:>+14.3f} +-{dse:.3f}{nsr_txt:>17}")
     print("note: 'clipped' counts grad_norm > 1.0; 'noise/sig' is logged only with "
-          "--track-grad-var.\nNone of these is a test of accuracy; they are the "
+          "--track-grad-var, (x%) = share of steps whose signal estimate was <= 0, "
+          "counted as +inf.\nNone of these is a test of accuracy; they are the "
           "stability claims the spec makes, measured.")
 
 

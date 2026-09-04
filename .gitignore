@@ -9,8 +9,14 @@ __pycache__/
 # local tool settings, not project config
 .claude/
 
-# training logs are regenerated; figures and their source data are committed
+# per-step training logs are the source data for fig 3 and `compare`, and
+# GPU sampling is not bit-reproducible (README: the measurement floor), so
+# the sweep logs are committed. Scratch runs (train_pp_*, train_prec_*, ...)
+# are not.
 results/train_*.jsonl
+!results/train_*_k*n*_s*.jsonl
+# superseded sweeps moved aside locally (1.1-sampler runs)
+results/archive_*/
 
 # ~1 GB per arm
 checkpoints/
