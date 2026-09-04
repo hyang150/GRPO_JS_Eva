@@ -23,7 +23,9 @@ This affects the standalone `gradvar` measurement, not `train`/`sweep`, their
 accuracy evaluations, or their checkpoints.
 
 **Sampler and mask corrections (2026-09-04):** three defects found in review,
-all fixed in code, none yet re-measured.
+all fixed in code. The training sweeps were re-measured with the corrected
+loop the same day (Phase 4b below); the standalone gradient-noise measurement
+has not been.
 
 * **Every rollout before this date was off-policy.** `generate()` passed
   temperature, top-p and top-k but not `repetition_penalty`, so it fell
@@ -37,7 +39,9 @@ all fixed in code, none yet re-measured.
   runs are still internally consistent, but they compare baselines under a
   sampler that is not π<sub>θ</sub>. The seed-0 sweep, the seed-1 sweep in
   progress, both historical `gradvar` files and every number in this README
-  carry the 1.1 sampler; any headline number needs a rerun.
+  carry the 1.1 sampler. The Phase 4b sweeps (2026-09-04, two group shapes,
+  three seeds, `repetition_penalty` recorded as 1.0 in every config line)
+  are the only training numbers below that do not.
 * **The completion mask stopped only on `<|im_end|>`.** Qwen2.5's
   `generation_config` also terminates on `<|endoftext|>`, which is the pad
   token, so a completion that ended that way was scored as 512 valid tokens
@@ -85,7 +89,27 @@ points** of test accuracy:
 `eval@0` is identical because greedy decoding is deterministic, so the
 divergence is entirely in training. `torch.manual_seed` does not make
 sampled generation reproducible on GPU — kernel selection and reduction
-order are not fixed.
+order are not fixed. (That pair ran under the 1.1 sampler.)
+
+The Phase 4b sweep contains a cleaner version of the same experiment, by
+accident of algebra. At K = 32, N = 2 the specified estimator's shrinkage
+term is c/S with c = (K−3)/N = 14.5, while S = Σ(x̄<sub>k</sub> − x̄)² over
+group means in {0, ½, 1} cannot exceed K/4 = 8. The positive-part clamp
+therefore fires on every batch: `js_fixed` logs shrink = 0 on all 150 steps of
+all three seeds, i.e. it computes exactly the `global` baseline. The two arms
+are the same algorithm on the same seed in two processes, and their step-1
+records agree to the bit (reward, gradient norm, completion length); they
+diverge from step 2. Final test accuracy, `global` minus `js_fixed`:
+
+| seed | `global` | `js_fixed` | difference |
+|---|---|---|---|
+| 0 | 44.0% | 43.5% | +0.5 |
+| 1 | 48.5% | 42.0% | +6.5 |
+| 2 | 43.0% | 41.5% | +1.5 |
+
+Same algorithm, three seeds, same prompts and test set: 0.5 to 6.5 points
+apart. That is the run-to-run term this protocol has to beat, and it is
+larger than the earlier two-run estimate.
 
 The effect this project is trying to detect is **0.65–1.5 points**: Table 2
 of arXiv:2511.03710, Qwen2.5-0.5B-Instruct on GSM8K, JS minus GRPO at
@@ -134,7 +158,11 @@ arXiv:2511.03710 eq. 17–18 across micro-batches, ~1.5 s/step). With
 `sweep` runs one arm per baseline from the same seed, so every arm sees the
 same prompt stream — a paired A/B rather than four independent runs.
 `--seeds 0 1 2` repeats the whole set per seed; `compare` then pairs arms
-within a seed and aggregates across seeds.
+within a seed and aggregates across seeds. `compare`, `figures` and
+`plot_training.py` key runs by (baseline, seed), so they refuse a `results/`
+glob that mixes group shapes — pass `--glob 'train_*_k8n8_s*.jsonl'` and
+`--glob 'train_*_k32n2_s*.jsonl'` separately; `figures` does this itself and
+writes `fig3_training.png` for 8×8 and `fig3_training_k32n2.png` for 32×2.
 
 ## Baselines
 
@@ -293,12 +321,84 @@ The historical `js_fixed` versus `global` comparison also needs remeasurement.
 * End-to-end training accuracy is not measured. At this scale it cannot be:
   the same prompt scored 28.3% and 18.3% on two 60-problem evals.
 
-## Training sweep
+## Training sweep, Phase 4b: the spec's own regime, 1.0 sampler, three seeds
 
 ```bash
-python main.py sweep --baselines vanilla js_fixed js_pooled js_loo global --steps 150
-python main.py compare
+python main.py sweep --seeds 0 1 2 --k 32 --n 2 --baselines vanilla js_fixed js_pooled global --track-grad-var --steps 150
+python main.py sweep --seeds 0 1 2 --k 8  --n 8 --baselines vanilla js_fixed js_pooled global --track-grad-var --steps 150
+python main.py compare --glob 'train_*_k8n8_s*.jsonl'
+python main.py compare --glob 'train_*_k32n2_s*.jsonl'
 ```
+
+Run 2026-09-04 on two RTX 5090s (`SERVER_RUNBOOK.md`; raw logs in
+`results/autodl_20260904_logs/`, `compare` output in
+`results/autodl_20260904_compare_*.txt`, the 24 per-step logs in
+`results/train_*_k{8n8,32n2}_s{0,1,2}.jsonl`). Same model, lr, 150 steps and
+200-problem greedy eval as before; the corrected sampler, mask and shrink
+diagnostic; K·N = 64 in both shapes so every arm sees the same number of
+completions per step. Every run starts from the same checkpoint, so `eval@0`
+is 45.0% for all 24 (it was 42.5% under the 1.1 sampler, which also penalised
+the greedy eval).
+
+Final test accuracy, mean ± s.e.m. over seeds 0–2, and the paired difference
+against `vanilla` on the same seed:
+
+| K×N | arm | final (per seed) | mean ± sem | vs `vanilla` | p (paired t, df=2) | shrink | collapsed steps |
+|---|---|---|---|---|---|---|---|
+| 8×8 | `vanilla` | 44.5 / 42.0 / 47.5 | 44.7 ± 1.6 | | | 1.000 | 0 |
+| 8×8 | `js_pooled` | 44.0 / 45.5 / 47.0 | 45.5 ± 0.9 | +0.8 ± 1.3 | 0.60 | 0.85 | 0–1 |
+| 8×8 | `js_fixed` | 44.0 / 47.5 / 46.0 | 45.8 ± 1.0 | +1.2 ± 2.2 | 0.65 | 0.21 | 38–44 |
+| 8×8 | `global` | 48.5 / 44.0 / 45.0 | 45.8 ± 1.4 | +1.2 ± 1.9 | 0.61 | 0.000 | 150 |
+| 32×2 | `vanilla` | 46.0 / 45.5 / 44.5 | 45.3 ± 0.4 | | | 1.000 | 0 |
+| 32×2 | `js_pooled` | 41.0 / 46.0 / 47.5 | 44.8 ± 2.0 | −0.5 ± 2.4 | 0.85 | 0.56 | 0–1 |
+| 32×2 | `js_fixed` | 43.5 / 42.0 / 41.5 | 42.3 ± 0.6 | −3.0 ± 0.3 | 0.009 | 0.000 | 150 |
+| 32×2 | `global` | 44.0 / 48.5 / 43.0 | 45.2 ± 1.7 | −0.2 ± 1.6 | 0.93 | 0.000 | 150 |
+
+`shrink` is the run mean of the implied shrinkage factor (1 = plain GRPO,
+0 = global mean); "collapsed" counts steps at exactly 0, out of 150.
+
+**At K = 8, N = 8 nothing is resolved.** Every arm is within 1.2 points of
+`vanilla`, every s.e.m. is larger than the difference, every p is about 0.6.
+The per-seed columns show why: the same arm moves by 3–5 points between
+seeds. Seed 0 alone would have said `global` beats `vanilla` by 4.0 points
+(McNemar p = 0.039, 10 wins / 2 losses); seeds 1 and 2 put it at +2.0 and
+−2.5. Anyone reporting the seed-0 number is reporting noise.
+
+**At K = 32, N = 2 the one "significant" row is the noise floor, measured.**
+`js_fixed` at −3.0 ± 0.3 (p = 0.009) looks like a finding. But as shown under
+*The measurement floor*, at this shape `js_fixed` is algebraically `global`:
+identical advantages on every batch, verified bit-for-bit at step 1. `global`
+itself sits at −0.2 ± 1.6. Pooling the two arms as what they are — six runs of
+one algorithm — gives −1.6 ± 1.0 against `vanilla`, and the p-value goes
+away. A df = 2 paired t-test with three differences that happen to land
+within 0.5 of each other produces p < 0.01 from nothing; that is the trap
+this row is kept in the table to illustrate.
+
+Two more things the panel settles. First, `js_fixed` is the specification
+verbatim, and at N = 2 — the regime the specification is motivated by — it
+does not merely over-shrink, it discards the group structure on 100% of steps
+(at N = 8 on 25–30%). `js_pooled`, the specification with its σ² ≈ 1
+precondition honoured, keeps 56% of the structure at N = 2 and 85% at N = 8,
+which is the mild shrinkage Stein's result actually asks for. Second, the
+"more stable training" claim finds no support at this scale: no arm clipped
+a single gradient step under the 1.0 sampler (the 1.1-sampler clip counts
+below were an off-policy artefact), sampled-token entropy falls from 0.52 to
+0.26–0.33 for every arm alike, and the per-step gradient noise/signal ratio
+(paper eq. 17–18, `--track-grad-var`) is 58–182 with 32–45% of steps
+returning a signal estimate ≤ 0 — i.e. at K = 8 or 32 prompts per step the
+gradient is essentially all noise for *every* baseline, and the ratio cannot
+separate them. `compare` reports those NaN steps as right-censored (+∞) with
+their share in brackets rather than dropping them, which would bias the
+median down.
+
+![Figure 3, K=8 N=8, seed 0](results/fig3_training.png)
+![Figure 3b, K=32 N=2, seed 0](results/fig3_training_k32n2.png)
+
+## Training sweep, seed 0 (1.1 sampler, superseded)
+
+The first sweep, kept for the record. All five arms sampled with the 1.1
+repetition penalty, so the stability differences below (clip counts, entropy)
+are off-policy artefacts that vanish under the corrected sampler above.
 
 Five arms from the same seed, so every arm walks the same prompt stream
 (verified: identical reward and degenerate-group fractions at step 0), and
@@ -349,8 +449,6 @@ The corrected variants keep 82–85% of the group structure; the specified one
 keeps 20% and discards it outright on 43% of steps. That `js_pooled` and
 `js_loo` — derived independently — land within 0.03 of each other is mutual
 corroboration.
-
-![Figure 3](results/fig3_training.png)
 
 ## Conformance with GRPO.md
 
@@ -411,12 +509,6 @@ Qwen terminators, and the sampler default.
 - [x] Phase 0 — GPU env: torch 2.13.0+cu129, sm_120 gate passed, 14.5 GiB VRAM free
 - [x] Phase 2 — GRPO loop, Qwen2.5-0.5B-Instruct + GSM8K rule-based reward
 - [ ] Phase 3 — projection bug corrected, pair estimator added; remeasure with the 1.0 sampler
-- [x] Phase 4 — 5-arm training sweep, 150 steps each, paired by seed (1.1 sampler; seed 1 in progress)
-- [ ] Phase 4b — the spec's own regime: small N at fixed K·N = 64, ≥3 seeds, 1.0 sampler, gradient variance logged:
-      ```bash
-      python main.py sweep --seeds 0 1 2 --k 32 --n 2 --baselines vanilla js_fixed js_pooled global --track-grad-var --steps 150
-      python main.py sweep --seeds 0 1 2 --k 8  --n 8 --baselines vanilla js_fixed js_pooled global --track-grad-var --steps 150
-      python main.py compare
-      ```
-      `js_fixed` is GRPO.md verbatim, `js_pooled` is GRPO.md with its σ²≈1 precondition honoured, `global` is what the former collapses to, `vanilla` is GRPO; add `rloo js_loo` for the paper's unbiased variants. About an hour per arm; the N=2 block is where the synthetic gain is largest (−54% MSE) and 65% of groups are degenerate.
+- [x] Phase 4 — 5-arm training sweep, 150 steps each, paired by seed (1.1 sampler; superseded)
+- [x] Phase 4b — the spec's own regime: K·N = 64 at N = 2 and N = 8, seeds 0–2, 1.0 sampler, gradient variance logged (2026-09-04, AutoDL, 2× RTX 5090, ~35 min per arm). No resolvable accuracy effect at either shape; `js_fixed` ≡ `global` at N = 2 gives a same-algorithm replicate pair 0.5–6.5 points apart. `rloo` and `js_loo` not included.
 - [ ] Phase 5 — verl PR

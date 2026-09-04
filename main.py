@@ -16,7 +16,7 @@ reference), --num-iterations (mu), --scale (advantage std normalisation),
 
 from __future__ import annotations
 
-import argparse
+import argparse, re
 import json
 import pathlib
 import random
@@ -149,11 +149,19 @@ def cmd_prompt(args):
 
 def cmd_figures(args):
     rc = 0
-    for script, need in (("plot_synthetic.py", "results/synthetic_mse.json"),
-                         ("plot_grad_variance.py", "results/grad_variance_k8n8_long.json"),
-                         ("plot_training.py", "results")):
+    jobs = [("plot_synthetic.py", "results/synthetic_mse.json", []),
+            ("plot_grad_variance.py", "results/grad_variance_k8n8_long.json", [])]
+    # one training figure per group shape; the plot script refuses a glob
+    # that mixes shapes, so hand it one at a time
+    shapes = sorted({re.search(r"_(k\d+n\d+)_s\d+\.jsonl$", p.name).group(1)
+                     for p in (ROOT / "results").glob("train_*_k*n*_s*.jsonl")})
+    for i, shape in enumerate(shapes):
+        out = "results/fig3_training.png" if shape == "k8n8" else f"results/fig3_training_{shape}.png"
+        jobs.append(("plot_training.py", "results",
+                     ["--glob", f"train_*_{shape}_s*.jsonl", "--out", out]))
+    for script, need, extra in jobs:
         if (ROOT / need).exists():
-            rc |= subprocess.call([sys.executable, str(ROOT / "experiments" / script)])
+            rc |= subprocess.call([sys.executable, str(ROOT / "experiments" / script), *extra])
         else:
             print(f"skip {script}: {need} not found")
     return rc
@@ -368,9 +376,12 @@ def main():
 
     p = sub.add_parser("compare", help="paired McNemar across sweep arms")
     p.add_argument("--reference", default="vanilla")
+    p.add_argument("--glob", default="train_*_k*n*_s*.jsonl",
+                   help="which results/*.jsonl to compare; one (K,N) shape at a time, "
+                        "e.g. 'train_*_k8n8_s*.jsonl'")
     p.set_defaults(fn=lambda a: subprocess.call(
         [sys.executable, str(ROOT / "experiments/compare_arms.py"),
-         "--reference", a.reference]))
+         "--reference", a.reference, "--glob", a.glob]))
 
     p = sub.add_parser("figures", help="regenerate every figure from saved results")
     p.set_defaults(fn=cmd_figures)

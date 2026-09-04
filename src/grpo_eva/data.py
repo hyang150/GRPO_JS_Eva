@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from datasets import Dataset, load_dataset
+from datasets import Dataset, config as ds_config, load_dataset
 
 from .rewards import extract_gold
 
@@ -20,7 +20,9 @@ SYSTEM = (
 
 
 def _cached_arrow(split: str) -> Path | None:
-    cache_root = Path.home() / ".cache/huggingface/datasets/openai___gsm8k/main/0.0.0"
+    # datasets resolves HF_DATASETS_CACHE / HF_HOME itself; a hard-coded
+    # ~/.cache misses machines that relocate the cache (HF_HOME=/root/autodl-tmp/hf).
+    cache_root = Path(ds_config.HF_DATASETS_CACHE) / "openai___gsm8k/main/0.0.0"
     paths = sorted(cache_root.glob(f"*/gsm8k-{split}.arrow"),
                    key=lambda p: p.stat().st_mtime, reverse=True)
     return paths[0] if paths else None

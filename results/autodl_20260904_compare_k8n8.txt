@@ -1,0 +1,40 @@
+across 3 seeds: [0, 1, 2]
+
+arm            final acc (mean+-sem)            vs vanilla  p (paired t)
+global                  45.8% +- 1.4%           +1.2% +-1.9%        0.6056
+js_fixed                45.8% +- 1.0%           +1.2% +-2.2%        0.6469
+js_pooled               45.5% +- 0.9%           +0.8% +-1.3%        0.5958
+vanilla                 44.7% +- 1.6%
+
+note: 3 seeds put the run-to-run floor near 1.7 points; the effect under test is 0.65-1.5 (arXiv:2511.03710 Table 2, K=64, 500 steps, 5 seeds).
+
+arm           eval@0  eval@final   delta  reward(last 30)   degen   shrink
+global        45.0%       48.5%   +3.5%            0.475    0.27    0.000
+js_fixed      45.0%       44.0%   -1.0%            0.486    0.28    0.260
+js_pooled     45.0%       44.0%   -1.0%            0.502    0.27    0.868
+vanilla       45.0%       44.5%   -0.5%            0.492    0.28    1.000
+
+paired McNemar, each arm's final eval vs its own eval@0
+arm          fixed  broken   delta        p
+global          14       7   +3.5%   0.1892
+js_fixed         9      11   -1.0%   0.8238
+js_pooled        9      11   -1.0%   0.8238
+vanilla          9      10   -0.5%   1.0000
+
+paired McNemar, final eval vs vanilla final
+arm           wins  losses   delta        p
+global          10       2   +4.0%   0.0386
+js_fixed         5       6   -0.5%   1.0000
+js_pooled        9      10   -0.5%   1.0000
+
+note: 200 problems resolves a paired difference of roughly 5-6 points.
+A p above 0.05 here means 'not resolved at this scale', not 'no effect'.
+
+stability, seed 0
+arm          clipped      entropy  adv_var  reward sd   d reward vs vanilla        noise/sig
+global          0.0%   0.52->0.30    0.235      0.096        -0.017 +-0.011       83.4 (38%)
+js_fixed        0.0%   0.52->0.29    0.192      0.087        -0.006 +-0.010       58.0 (32%)
+js_pooled       0.0%   0.52->0.26    0.138      0.104        +0.009 +-0.011       59.3 (37%)
+vanilla         0.0%   0.52->0.29    0.138      0.091        +0.000 +-0.000       93.1 (41%)
+note: 'clipped' counts grad_norm > 1.0; 'noise/sig' is logged only with --track-grad-var, (x%) = share of steps whose signal estimate was <= 0, counted as +inf.
+None of these is a test of accuracy; they are the stability claims the spec makes, measured.
